@@ -1,0 +1,54 @@
+{
+  "scan_command": "",
+  "output_extension": "pdf",
+  "doc_types": [
+    {
+      "key": "vvzv",
+      "label": "ВВЗВ",
+      "code": "001",
+      "template": "{code}_{label}_{date}_{episode}_{tag}"
+    },
+    {
+      "key": "vvm",
+      "label": "ВВМ",
+      "code": "002",
+      "template": "{code}_{label}_{date}_{episode}_{tag}"
+    },
+    {
+      "key": "zalyshkova_vartist",
+      "label": "Відомість залишкової вартості",
+      "code": "003",
+      "template": "{code}_{label}_{date}_{episode}_{tag}"
+    },
+    {
+      "key": "yeas",
+      "label": "ЄАС",
+      "code": "004",
+      "template": "{code}_{label}_{date}_{episode}_{tag}"
+    },
+    {
+      "key": "as",
+      "label": "АС",
+      "code": "005",
+      "template": "{code}_{label}_{date}_{episode}_{tag}"
+    },
+    {
+      "key": "extract_losses",
+      "label": "витяг з книги втрат",
+      "code": "006",
+      "template": "{code}_{section}_{label}_{date}_{episode}_{tag}"
+    },
+    {
+      "key": "extract_shortages",
+      "label": "витяг з книги нестач",
+      "code": "007",
+      "template": "{code}_{section}_{label}_{date}_{episode}_{tag}"
+    },
+    {
+      "key": "order",
+      "label": "Наказ",
+      "code": "008",
+      "template": "{code}_{label}_{date}_{episode}_{tag}"
+    }
+  ]
+}
