@@ -29,26 +29,32 @@
 - `006_01_витяг з книги втрат_10.05.22_1_СЗ`
 - `003_Відомість залишкової вартості_10.05.22_1_СЗ`
 
-## Швидкий старт
+## Швидкий старт (Windows)
 
-1. Налаштуйте Python 3.10+ на Windows.
+1. Налаштуйте Python 3.10+.
 2. Відкрийте `scanner_config.json` і заповніть `scan_command`, наприклад:
 
 ```json
 "scan_command": "naps2.console --profile \"Default\" --output \"{output_path}\""
 ```
 
-3. Перевірте запуск вручну:
+3. Запуск вручну з абсолютним шляхом до скрипта:
 
-```bash
-python tc_scanner_launcher.py "C:\\шлях\\до\\поточної\\папки"
+```powershell
+python "C:\TC_scaner\tc_scanner_launcher.py" "C:\TC_scaner"
 ```
 
-4. Додайте кнопку в Total Commander:
-   - **Command**: `pythonw.exe`
-   - **Parameters**: `"C:\path\to\tc_scanner_launcher.py" "%P"`
-   - **Start path**: папка з `tc_scanner_launcher.py`
-   - **Icon/Tooltip**: на ваш розсуд.
+> Помилка `can't open file 'C:\Users\...\tc_scanner_launcher.py'` означає, що ви запускали команду не з тієї папки і без абсолютного шляху до скрипта.
+
+## Рекомендоване підключення до Total Commander
+
+Щоб не залежати від поточної директорії, використовуйте wrapper `launch_tc_scanner.cmd`.
+
+- **Command**: `C:\TC_scaner\launch_tc_scanner.cmd`
+- **Parameters**: `"%P"`
+- **Start path**: `C:\TC_scaner`
+
+`launch_tc_scanner.cmd` сам знаходить `tc_scanner_launcher.py` у своїй папці та запускає через `py -3` або `python`.
 
 > У Total Commander «меню при наведенні» напряму обмежене самим TC. Поточне рішення відкриває компактне меню одразу після натискання кнопки.
 
