@@ -14,6 +14,7 @@ from pathlib import Path
 from tkinter import (
     BOTH,
     END,
+    INSERT,
     LEFT,
     RIGHT,
     Button,
@@ -21,12 +22,15 @@ from tkinter import (
     Frame,
     Label,
     Listbox,
+    Menu,
     OptionMenu,
     StringVar,
+    Text,
     Tk,
     Toplevel,
     messagebox,
 )
+from tkinter.scrolledtext import ScrolledText
 from typing import Dict, List
 
 CONFIG_PATH = Path(__file__).with_name("scanner_config.json")
@@ -147,6 +151,147 @@ def run_scan(cmd_template: str, output_path: Path) -> None:
     subprocess.run(cmd, shell=True, check=True)
 
 
+class TextEditHelper:
+    """Reusable text-edit UX for Entry/Text widgets (context menu + hotkeys)."""
+
+    def __init__(self, root: Tk):
+        self.root = root
+        self._menu = Menu(root, tearoff=0)
+        self._widget: Entry | Text | None = None
+
+        self._menu.add_command(label="Вирізати", command=lambda: self._cut(self._widget))
+        self._menu.add_command(label="Копіювати", command=lambda: self._copy(self._widget))
+        self._menu.add_command(label="Вставити", command=lambda: self._paste(self._widget))
+        self._menu.add_separator()
+        self._menu.add_command(label="Виділити все", command=lambda: self._select_all(self._widget))
+        self._menu.add_command(label="Очистити", command=lambda: self._clear(self._widget))
+
+    def bind(self, widget: Entry | Text) -> None:
+        widget.bind("<Button-1>", lambda e: self._focus_widget(e.widget), add="+")
+        widget.bind("<Button-3>", self._show_menu, add="+")
+
+        for seq in ("<Control-a>", "<Control-A>"):
+            widget.bind(seq, self._on_select_all, add="+")
+        for seq in ("<Control-c>", "<Control-C>", "<Control-Insert>"):
+            widget.bind(seq, self._on_copy, add="+")
+        for seq in ("<Control-x>", "<Control-X>"):
+            widget.bind(seq, self._on_cut, add="+")
+        for seq in ("<Control-v>", "<Control-V>", "<Shift-Insert>"):
+            widget.bind(seq, self._on_paste, add="+")
+
+    def _show_menu(self, event) -> str:
+        self._widget = event.widget
+        self._focus_widget(event.widget)
+        self._menu.tk_popup(event.x_root, event.y_root)
+        self._menu.grab_release()
+        return "break"
+
+    def _focus_widget(self, widget) -> None:
+        widget.focus_set()
+
+    def _on_select_all(self, event) -> str:
+        self._select_all(event.widget)
+        return "break"
+
+    def _on_copy(self, event) -> str:
+        self._copy(event.widget)
+        return "break"
+
+    def _on_cut(self, event) -> str:
+        self._cut(event.widget)
+        return "break"
+
+    def _on_paste(self, event) -> str:
+        self._paste(event.widget)
+        return "break"
+
+    def _select_all(self, widget: Entry | Text | None) -> None:
+        if widget is None:
+            return
+        if isinstance(widget, Entry):
+            widget.selection_range(0, END)
+            widget.icursor(END)
+        else:
+            widget.tag_add("sel", "1.0", END)
+            widget.mark_set(INSERT, "1.0")
+            widget.see(INSERT)
+
+    def _copy(self, widget: Entry | Text | None) -> None:
+        if widget is None:
+            return
+        try:
+            widget.event_generate("<<Copy>>")
+            return
+        except Exception:  # noqa: BLE001
+            pass
+
+        selected_text = ""
+        try:
+            if isinstance(widget, Entry):
+                selected_text = widget.selection_get()
+            else:
+                selected_text = widget.get("sel.first", "sel.last")
+        except Exception:  # noqa: BLE001
+            selected_text = ""
+
+        if selected_text:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(selected_text)
+
+    def _cut(self, widget: Entry | Text | None) -> None:
+        if widget is None:
+            return
+        try:
+            widget.event_generate("<<Cut>>")
+            return
+        except Exception:  # noqa: BLE001
+            pass
+
+        self._copy(widget)
+        try:
+            if isinstance(widget, Entry):
+                widget.delete("sel.first", "sel.last")
+            else:
+                widget.delete("sel.first", "sel.last")
+        except Exception:  # noqa: BLE001
+            return
+
+    def _paste(self, widget: Entry | Text | None) -> None:
+        if widget is None:
+            return
+        try:
+            widget.event_generate("<<Paste>>")
+            return
+        except Exception:  # noqa: BLE001
+            pass
+
+        try:
+            clip_text = self.root.clipboard_get()
+        except Exception:  # noqa: BLE001
+            return
+
+        if isinstance(widget, Entry):
+            try:
+                widget.delete("sel.first", "sel.last")
+            except Exception:  # noqa: BLE001
+                pass
+            widget.insert(INSERT, clip_text)
+        else:
+            try:
+                widget.delete("sel.first", "sel.last")
+            except Exception:  # noqa: BLE001
+                pass
+            widget.insert(INSERT, clip_text)
+
+    def _clear(self, widget: Entry | Text | None) -> None:
+        if widget is None:
+            return
+        if isinstance(widget, Entry):
+            widget.delete(0, END)
+        else:
+            widget.delete("1.0", END)
+
+
 class ScannerUI:
     def __init__(self, cwd: Path):
         self.cwd = cwd
@@ -156,6 +301,7 @@ class ScannerUI:
         self.root = Tk()
         self.root.title("TC Scanner")
         self.root.geometry("680x380")
+        self.text_helper = TextEditHelper(self.root)
 
         self.doc_types = self.config.get("doc_types", [])
         self.current_doc: dict | None = None
@@ -197,6 +343,7 @@ class ScannerUI:
         Label(right, text="Назва файлу:", font=("Segoe UI", 10, "bold")).pack(anchor="w")
         self.name_entry = Entry(right, textvariable=self.custom_name_var)
         self.name_entry.pack(fill="x", pady=(6, 2))
+        self.text_helper.bind(self.name_entry)
         self.custom_name_var.trace_add("write", lambda *_: self._refresh_preview())
 
         Label(right, text="Прев'ю:").pack(anchor="w", pady=(8, 0))
@@ -253,19 +400,26 @@ class ScannerUI:
 
         Label(wnd, text="Команда сканування (використовуйте {output_path}):").pack(anchor="w", padx=10, pady=(10, 2))
         cmd_var = StringVar(wnd, self.config.get("scan_command", ""))
-        Entry(wnd, textvariable=cmd_var).pack(fill="x", padx=10)
+        cmd_entry = Entry(wnd, textvariable=cmd_var)
+        cmd_entry.pack(fill="x", padx=10)
+        self.text_helper.bind(cmd_entry)
 
         Label(wnd, text="JSON для типів документів:").pack(anchor="w", padx=10, pady=(10, 2))
-        txt = Entry(wnd)
-        txt.pack(fill="x", padx=10)
-        txt.insert(0, json.dumps(self.config.get("doc_types", []), ensure_ascii=False))
+        txt = ScrolledText(wnd, height=14, wrap="word")
+        txt.pack(fill=BOTH, expand=True, padx=10)
+        self.text_helper.bind(txt)
+        txt.insert("1.0", json.dumps(self.config.get("doc_types", []), ensure_ascii=False, indent=2))
 
         def save() -> None:
             try:
-                docs = json.loads(txt.get())
+                raw_docs = txt.get("1.0", END).rstrip("\n")
+                docs = json.loads(raw_docs)
                 self.config["doc_types"] = docs
                 self.config["scan_command"] = cmd_var.get().strip()
                 save_config(self.config)
+            except json.JSONDecodeError as exc:
+                messagebox.showerror("Помилка JSON", f"Невалідний JSON у типах документів:\n{exc}")
+                return
             except Exception as exc:  # noqa: BLE001
                 messagebox.showerror("Помилка", f"Не вдалося зберегти:\n{exc}")
                 return
