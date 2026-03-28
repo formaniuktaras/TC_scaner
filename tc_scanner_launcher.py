@@ -6,10 +6,13 @@ Designed to be launched from Total Commander button.
 from __future__ import annotations
 
 import json
+import logging
+import os
 import re
 import shlex
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from tkinter import (
@@ -35,6 +38,18 @@ from tkinter.scrolledtext import ScrolledText
 from typing import Dict, List
 
 CONFIG_PATH = Path(__file__).with_name("scanner_config.json")
+LOG_PATH = Path(__file__).with_name("tc_scanner.log")
+SCAN_TIMEOUT_SECONDS = 120.0
+OUTPUT_WAIT_TIMEOUT_SECONDS = 12.0
+OUTPUT_WAIT_POLL_INTERVAL_SECONDS = 0.5
+
+LOGGER = logging.getLogger("tc_scanner")
+if not LOGGER.handlers:
+    LOGGER.setLevel(logging.INFO)
+    file_handler = logging.FileHandler(LOG_PATH, encoding="utf-8")
+    file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    LOGGER.addHandler(file_handler)
+    LOGGER.propagate = False
 
 
 @dataclass
@@ -50,6 +65,20 @@ class FolderContext:
             "episode": self.episode,
             "section": self.section,
         }
+
+
+@dataclass
+class ScanResult:
+    command: str
+    expected_output_path: Path
+    returncode: int | None
+    stdout: str
+    stderr: str
+    file_exists: bool
+    file_size: int
+    elapsed_seconds: float
+    error_type: str | None = None
+    error_message: str | None = None
 
 
 DEFAULT_CONFIG = {
@@ -158,19 +187,130 @@ def _build_scan_args(cmd_template: str, output_path: Path) -> str | list[str]:
     return shlex.split(cmd, posix=True)
 
 
-def run_scan(cmd_template: str, output_path: Path) -> None:
+def _tail_text(text: str, lines: int = 8) -> str:
+    stripped = text.strip()
+    if not stripped:
+        return "(порожньо)"
+    parts = stripped.splitlines()
+    return "\n".join(parts[-lines:])
+
+
+def _format_command_for_logs(args: str | list[str]) -> str:
+    if isinstance(args, str):
+        return args
+    return " ".join(shlex.quote(arg) for arg in args)
+
+
+def wait_for_output_file(
+    path: Path,
+    timeout: float = OUTPUT_WAIT_TIMEOUT_SECONDS,
+    poll_interval: float = OUTPUT_WAIT_POLL_INTERVAL_SECONDS,
+    stable_checks: int = 2,
+) -> tuple[bool, int]:
+    deadline = time.monotonic() + timeout
+    previous_size: int | None = None
+    stable_count = 0
+    latest_size = 0
+
+    while time.monotonic() <= deadline:
+        if path.exists():
+            latest_size = path.stat().st_size
+            if latest_size > 0:
+                if previous_size == latest_size:
+                    stable_count += 1
+                else:
+                    stable_count = 1
+                previous_size = latest_size
+                if stable_count >= stable_checks:
+                    return True, latest_size
+            else:
+                previous_size = latest_size
+                stable_count = 0
+        else:
+            previous_size = None
+            stable_count = 0
+
+        time.sleep(poll_interval)
+
+    return False, latest_size
+
+
+def run_scan(cmd_template: str, output_path: Path, timeout: float = SCAN_TIMEOUT_SECONDS) -> ScanResult:
     args = _build_scan_args(cmd_template, output_path)
     if not args:
         raise ValueError("Команда сканування порожня")
 
+    command_for_logs = _format_command_for_logs(args)
+    started_at = time.monotonic()
     kwargs = {
         "check": True,
         "shell": False,
+        "capture_output": True,
+        "text": True,
+        "timeout": timeout,
     }
     if sys.platform.startswith("win"):
         kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-    subprocess.run(args, **kwargs)
+    returncode: int | None = None
+    stdout = ""
+    stderr = ""
+    error_type: str | None = None
+    error_message: str | None = None
+
+    try:
+        completed = subprocess.run(args, **kwargs)
+        returncode = completed.returncode
+        stdout = completed.stdout or ""
+        stderr = completed.stderr or ""
+    except FileNotFoundError as exc:
+        error_type = "file_not_found"
+        error_message = str(exc)
+    except subprocess.TimeoutExpired as exc:
+        error_type = "timeout_expired"
+        error_message = str(exc)
+        returncode = None
+        stdout = (exc.stdout or "") if isinstance(exc.stdout, str) else ""
+        stderr = (exc.stderr or "") if isinstance(exc.stderr, str) else ""
+    except subprocess.CalledProcessError as exc:
+        error_type = "called_process_error"
+        error_message = str(exc)
+        returncode = exc.returncode
+        stdout = exc.stdout or ""
+        stderr = exc.stderr or ""
+
+    elapsed_seconds = time.monotonic() - started_at
+    file_exists = output_path.exists()
+    file_size = output_path.stat().st_size if file_exists else 0
+
+    result = ScanResult(
+        command=command_for_logs,
+        expected_output_path=output_path,
+        returncode=returncode,
+        stdout=stdout,
+        stderr=stderr,
+        file_exists=file_exists,
+        file_size=file_size,
+        elapsed_seconds=elapsed_seconds,
+        error_type=error_type,
+        error_message=error_message,
+    )
+    log_scan_result(result)
+    return result
+
+
+def log_scan_result(result: ScanResult) -> None:
+    LOGGER.info(
+        "scan_result command=%s expected_output_path=%s returncode=%s elapsed=%.2fs file_exists=%s file_size=%s",
+        result.command,
+        result.expected_output_path,
+        result.returncode,
+        result.elapsed_seconds,
+        result.file_exists,
+        result.file_size,
+    )
+    LOGGER.info("scan_stdout:\n%s", result.stdout if result.stdout.strip() else "(порожньо)")
+    LOGGER.info("scan_stderr:\n%s", result.stderr if result.stderr.strip() else "(порожньо)")
 
 
 class TextEditHelper:
@@ -403,21 +543,78 @@ class ScannerUI:
         if not cmd:
             messagebox.showerror("Помилка", "Не налаштована команда сканування")
             return
+        if "{output_path}" not in cmd:
+            messagebox.showerror(
+                "Помилка",
+                "Команда сканування має містити плейсхолдер {output_path}.",
+            )
+            return
 
         tag = self.tag_var.get() if self.tag_var.get() != "(не знайдено)" else ""
         auto_name = build_filename(self.current_doc, self.ctx, tag)
         name = sanitize_part(self.custom_name_var.get()) or auto_name
         output_path = self.cwd / f"{name}.{self.config.get('output_extension', 'pdf')}"
+        output_dir = output_path.parent
 
         try:
-            run_scan(cmd, output_path)
-            messagebox.showinfo("Готово", f"Файл створено:\n{output_path}")
+            output_dir.mkdir(parents=True, exist_ok=True)
+            if not output_dir.exists():
+                messagebox.showerror("Помилка", f"Цільова папка не існує:\n{output_dir}")
+                return
+            if not os.access(output_dir, os.W_OK):
+                messagebox.showerror("Помилка", f"Немає прав на запис у папку:\n{output_dir}")
+                return
+
+            result = run_scan(cmd, output_path)
+
+            if result.error_type == "file_not_found":
+                messagebox.showerror("Помилка", "Не знайдено програму сканування. Перевірте scan_command у налаштуваннях.")
+                return
+            if result.error_type == "timeout_expired":
+                messagebox.showerror(
+                    "Помилка",
+                    f"Команда сканування перевищила таймаут ({SCAN_TIMEOUT_SECONDS:.0f} с).\n"
+                    f"Очікуваний файл: {output_path}\n\n"
+                    f"stdout (останні рядки):\n{_tail_text(result.stdout)}\n\n"
+                    f"stderr (останні рядки):\n{_tail_text(result.stderr)}",
+                )
+                return
+            if result.error_type == "called_process_error":
+                messagebox.showerror(
+                    "Помилка",
+                    f"Зовнішня програма сканування завершилась з помилкою (код {result.returncode}).\n"
+                    f"Очікуваний файл: {output_path}\n\n"
+                    f"stdout (останні рядки):\n{_tail_text(result.stdout)}\n\n"
+                    f"stderr (останні рядки):\n{_tail_text(result.stderr)}",
+                )
+                return
+
+            file_ready, stable_size = wait_for_output_file(output_path)
+            result.file_exists = file_ready
+            result.file_size = stable_size if file_ready else 0
+            log_scan_result(result)
+
+            if not file_ready:
+                messagebox.showerror(
+                    "Помилка",
+                    "Зовнішня програма завершилась, але очікуваний файл не з’явився.\n"
+                    "Імовірно, команда сканування зберегла файл в інше місце або проігнорувала output_path.\n\n"
+                    f"Очікуваний шлях: {output_path}\n"
+                    f"Код завершення: {result.returncode}\n\n"
+                    f"stdout (останні рядки):\n{_tail_text(result.stdout)}\n\n"
+                    f"stderr (останні рядки):\n{_tail_text(result.stderr)}",
+                )
+                return
+
+            messagebox.showinfo(
+                "Готово",
+                f"Файл створено:\n{output_path}\n"
+                f"Розмір: {stable_size} байт",
+            )
         except ValueError as exc:
             messagebox.showerror("Помилка", f"Некоректна команда сканування:\n{exc}")
-        except FileNotFoundError:
-            messagebox.showerror("Помилка", "Не знайдено програму сканування. Перевірте scan_command у налаштуваннях.")
-        except subprocess.CalledProcessError as exc:
-            messagebox.showerror("Помилка", f"Зовнішня програма сканування завершилась з помилкою (код {exc.returncode}).")
+        except OSError as exc:
+            messagebox.showerror("Помилка", f"Проблема доступу до файлів/папок:\n{exc}")
 
     def _settings(self) -> None:
         wnd = Toplevel(self.root)
