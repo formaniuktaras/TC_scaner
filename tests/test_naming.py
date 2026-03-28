@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from tc_scanner_launcher import build_filename, parse_context
+from tc_scanner_launcher import _build_scan_args, build_filename, parse_context
 
 
 def test_parse_context_from_nested_folder():
@@ -35,3 +35,37 @@ def test_build_filename_zalyshkova_vartist():
     }
 
     assert build_filename(doc, ctx, "СЗ") == "003_Відомість залишкової вартості_10.05.22_1_СЗ"
+
+
+def test_build_scan_args_unix_splits_and_unquotes(monkeypatch):
+    monkeypatch.setattr("tc_scanner_launcher.sys.platform", "linux")
+    cmd = (
+        'naps2.console --driver twain --device "Pantum M6550NW" '
+        '--output "{output_path}" --force'
+    )
+
+    args = _build_scan_args(cmd, Path("/tmp/test2.pdf"))
+
+    assert args == [
+        "naps2.console",
+        "--driver",
+        "twain",
+        "--device",
+        "Pantum M6550NW",
+        "--output",
+        "/tmp/test2.pdf",
+        "--force",
+    ]
+
+
+def test_build_scan_args_windows_keeps_command_string(monkeypatch):
+    monkeypatch.setattr("tc_scanner_launcher.sys.platform", "win32")
+    cmd = (
+        'C:\\PROGRA~1\\NAPS2\\NAPS2.Console.exe --driver twain --device "Pantum" '
+        '-o "C:\\Temp\\test2.pdf" --force'
+    )
+
+    args = _build_scan_args(cmd, Path("C:/ignored.pdf"))
+
+    assert isinstance(args, str)
+    assert '--device "Pantum"' in args

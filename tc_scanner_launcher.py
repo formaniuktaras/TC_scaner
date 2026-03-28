@@ -147,9 +147,15 @@ def build_filename(doc_type: dict, ctx: FolderContext, tag: str) -> str:
     return name.strip("_ ")
 
 
-def _build_scan_args(cmd_template: str, output_path: Path) -> list[str]:
+def _build_scan_args(cmd_template: str, output_path: Path) -> str | list[str]:
     cmd = cmd_template.format(output_path=str(output_path))
-    return shlex.split(cmd, posix=False)
+
+    # On Windows, keep the command as a single string so CreateProcess receives
+    # proper quoting (e.g. --device "Pantum"), matching behavior from CMD.
+    if sys.platform.startswith("win"):
+        return cmd
+
+    return shlex.split(cmd, posix=True)
 
 
 def run_scan(cmd_template: str, output_path: Path) -> None:
