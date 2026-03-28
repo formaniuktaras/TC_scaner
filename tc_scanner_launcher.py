@@ -148,7 +148,39 @@ def build_filename(doc_type: dict, ctx: FolderContext, tag: str) -> str:
 
 
 def _build_scan_args(cmd_template: str, output_path: Path) -> str | list[str]:
-    cmd = cmd_template.format(output_path=str(output_path))
+    output_str = str(output_path)
+
+    def quote_arg(value: str) -> str:
+        if sys.platform.startswith("win"):
+            return subprocess.list2cmdline([value])
+        return shlex.quote(value)
+
+    # Support legacy {output_path} and make it resilient when users forget
+    # to quote it in scan_command (especially important for paths with spaces).
+    token = "{output_path}"
+    quoted_output = quote_arg(output_str)
+    cmd_parts: list[str] = []
+    pos = 0
+    while True:
+        idx = cmd_template.find(token, pos)
+        if idx < 0:
+            cmd_parts.append(cmd_template[pos:])
+            break
+
+        cmd_parts.append(cmd_template[pos:idx])
+        end_idx = idx + len(token)
+        prev_char = cmd_template[idx - 1] if idx > 0 else ""
+        next_char = cmd_template[end_idx] if end_idx < len(cmd_template) else ""
+
+        # If placeholder is already wrapped in quotes, inject raw path.
+        if prev_char in {'"', "'"} and next_char in {'"', "'"}:
+            cmd_parts.append(output_str)
+        else:
+            cmd_parts.append(quoted_output)
+
+        pos = end_idx
+
+    cmd = "".join(cmd_parts)
 
     # On Windows, keep the command as a single string so CreateProcess receives
     # proper quoting (e.g. --device "Pantum"), matching behavior from CMD.

@@ -62,10 +62,21 @@ def test_build_scan_args_windows_keeps_command_string(monkeypatch):
     monkeypatch.setattr("tc_scanner_launcher.sys.platform", "win32")
     cmd = (
         'C:\\PROGRA~1\\NAPS2\\NAPS2.Console.exe --driver twain --device "Pantum" '
-        '-o "C:\\Temp\\test2.pdf" --force'
+        "-o {output_path} --force"
     )
 
-    args = _build_scan_args(cmd, Path("C:/ignored.pdf"))
+    args = _build_scan_args(cmd, Path("C:/Temp/test 2.pdf"))
 
     assert isinstance(args, str)
     assert '--device "Pantum"' in args
+    assert '-o "C:/Temp/test 2.pdf"' in args
+
+
+def test_build_scan_args_windows_does_not_double_quote_placeholder(monkeypatch):
+    monkeypatch.setattr("tc_scanner_launcher.sys.platform", "win32")
+    cmd = 'scanner.exe --output "{output_path}" --force'
+
+    args = _build_scan_args(cmd, Path("C:/Temp/test 2.pdf"))
+
+    assert isinstance(args, str)
+    assert '--output "C:/Temp/test 2.pdf"' in args
