@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -146,9 +147,24 @@ def build_filename(doc_type: dict, ctx: FolderContext, tag: str) -> str:
     return name.strip("_ ")
 
 
-def run_scan(cmd_template: str, output_path: Path) -> None:
+def _build_scan_args(cmd_template: str, output_path: Path) -> list[str]:
     cmd = cmd_template.format(output_path=str(output_path))
-    subprocess.run(cmd, shell=True, check=True)
+    return shlex.split(cmd, posix=False)
+
+
+def run_scan(cmd_template: str, output_path: Path) -> None:
+    args = _build_scan_args(cmd_template, output_path)
+    if not args:
+        raise ValueError("Команда сканування порожня")
+
+    kwargs = {
+        "check": True,
+        "shell": False,
+    }
+    if sys.platform.startswith("win"):
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
+    subprocess.run(args, **kwargs)
 
 
 class TextEditHelper:
@@ -390,8 +406,12 @@ class ScannerUI:
         try:
             run_scan(cmd, output_path)
             messagebox.showinfo("Готово", f"Файл створено:\n{output_path}")
+        except ValueError as exc:
+            messagebox.showerror("Помилка", f"Некоректна команда сканування:\n{exc}")
+        except FileNotFoundError:
+            messagebox.showerror("Помилка", "Не знайдено програму сканування. Перевірте scan_command у налаштуваннях.")
         except subprocess.CalledProcessError as exc:
-            messagebox.showerror("Помилка", f"Не вдалося запустити сканування:\n{exc}")
+            messagebox.showerror("Помилка", f"Зовнішня програма сканування завершилась з помилкою (код {exc.returncode}).")
 
     def _settings(self) -> None:
         wnd = Toplevel(self.root)

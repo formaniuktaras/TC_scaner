@@ -21,6 +21,7 @@
   - контекстне меню по правому кліку (вирізати/копіювати/вставити/виділити все/очистити),
   - гарячі клавіші `Ctrl+A`, `Ctrl+C`, `Ctrl+X`, `Ctrl+V`, `Shift+Insert`, `Ctrl+Insert`,
   - багаторядкове поле для JSON у вікні налаштувань з форматованим відображенням.
+- Запуск сканування без `shell=True` (без зайвого `cmd.exe` із боку нашого виклику).
 
 ## Приклад вашого кейсу
 
@@ -42,6 +43,8 @@
 "scan_command": "naps2.console --profile \"Default\" --output \"{output_path}\""
 ```
 
+> Важливо: команда тепер запускається **без shell=True**, тому використовуйте звичайні аргументи програми. Конструкції `|`, `&&`, `>`, `<` (shell-синтаксис) не підтримуються.
+
 3. Запуск вручну з абсолютним шляхом до скрипта:
 
 ```powershell
@@ -50,17 +53,22 @@ python "C:\TC_scaner\tc_scanner_launcher.py" "C:\TC_scaner"
 
 > Помилка `can't open file 'C:\Users\...\tc_scanner_launcher.py'` означає, що ви запускали команду не з тієї папки і без абсолютного шляху до скрипта.
 
-## Рекомендоване підключення до Total Commander
+## Рекомендоване підключення до Total Commander (без чорного вікна)
 
-Щоб не залежати від поточної директорії, використовуйте wrapper `launch_tc_scanner.cmd`.
+Використовуйте **silent launcher** `launch_tc_scanner_silent.vbs`.
 
-- **Command**: `C:\TC_scaner\launch_tc_scanner.cmd`
-- **Parameters**: `"%P"`
+- **Command**: `wscript.exe`
+- **Parameters**: `"C:\TC_scaner\launch_tc_scanner_silent.vbs" "%P"`
 - **Start path**: `C:\TC_scaner`
 
-`launch_tc_scanner.cmd` сам знаходить `tc_scanner_launcher.py` у своїй папці та запускає через `py -3` або `python`.
+Що це дає:
+- під час запуску з кнопки TC відкривається лише GUI-вікно `TC Scanner`;
+- додаткове консольне вікно `cmd.exe` від wrapper не відкривається;
+- якщо Python launcher не знайдено, користувач отримує `MsgBox` (а не консольний текст).
 
-> У Total Commander «меню при наведенні» напряму обмежене самим TC. Поточне рішення відкриває компактне меню одразу після натискання кнопки.
+## Legacy wrapper
+
+`launch_tc_scanner.cmd` залишений для сумісності, але він може показувати консольне вікно, бо `cmd`-файл у Windows запускається через консольну підсистему.
 
 ## Налаштування шаблонів
 
