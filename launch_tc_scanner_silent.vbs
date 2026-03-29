@@ -15,15 +15,25 @@ If Len(targetDir) = 0 Then
   targetDir = shell.CurrentDirectory
 End If
 
+' remove accidental wrapping quotes if they arrived from caller
+If Len(targetDir) >= 2 Then
+  If Left(targetDir, 1) = Chr(34) And Right(targetDir, 1) = Chr(34) Then
+    targetDir = Mid(targetDir, 2, Len(targetDir) - 2)
+  End If
+End If
+
+'trailing backslash before a closing quote can produce a literal quote in TC argument
+If Right(targetDir, 1) = Chr(34) Then
+  targetDir = Left(targetDir, Len(targetDir) - 1)
+End If
+
 quotedScript = Chr(34) & fso.BuildPath(scriptDir, "tc_scanner_launcher.py") & Chr(34)
 quotedTarget = Chr(34) & targetDir & Chr(34)
 
 launcherCmd = ""
 On Error Resume Next
 launcherCmd = shell.ExpandEnvironmentStrings("%SystemRoot%") & "\py.exe"
-If Not fso.FileExists(launcherCmd) Then
-  launcherCmd = ""
-End If
+If Not fso.FileExists(launcherCmd) Then launcherCmd = ""
 On Error GoTo 0
 
 If Len(launcherCmd) > 0 Then
@@ -35,9 +45,7 @@ End If
 launcherCmd = ""
 On Error Resume Next
 launcherCmd = shell.ExpandEnvironmentStrings("%LocalAppData%") & "\Programs\Python\Launcher\py.exe"
-If Not fso.FileExists(launcherCmd) Then
-  launcherCmd = ""
-End If
+If Not fso.FileExists(launcherCmd) Then launcherCmd = ""
 On Error GoTo 0
 
 If Len(launcherCmd) > 0 Then
