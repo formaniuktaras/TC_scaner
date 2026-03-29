@@ -1,4 +1,5 @@
 import csv
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -6,9 +7,14 @@ import pytest
 from tc_scanner_launcher import (
     DEFAULT_CONFIG,
     append_scan_log,
+    cleanup_temp_files,
+    format_scan_process_error,
     load_config,
     perform_scan_with_temp,
     resolve_final_output_path,
+    select_initial_tag,
+    validate_scan_requirements,
+    FolderContext,
 )
 
 
@@ -115,3 +121,77 @@ def test_load_config_backwards_compatible(tmp_path: Path, monkeypatch):
     assert cfg["duplicate_strategy"] == DEFAULT_CONFIG["duplicate_strategy"]
     assert cfg["temp_dir"] == DEFAULT_CONFIG["temp_dir"]
     assert cfg["log_file"] == DEFAULT_CONFIG["log_file"]
+    assert "ui_state" in cfg
+
+
+def test_ui_state_save_load(tmp_path: Path, monkeypatch):
+    config_path = tmp_path / "scanner_config.json"
+    config_path.write_text(
+        '{"scan_command":"scanner","ui_state":{"last_doc_type":"as","last_tag":"СЗ"}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("tc_scanner_launcher.CONFIG_PATH", config_path)
+
+    cfg = load_config()
+
+    assert cfg["ui_state"]["last_doc_type"] == "as"
+    assert cfg["ui_state"]["last_tag"] == "СЗ"
+
+
+def test_auto_tag_selection():
+    assert select_initial_tag(["СЗ"], "РС") == "СЗ"
+    assert select_initial_tag(["РС", "СЗ"], "СЗ") == "СЗ"
+
+
+def test_duplicate_strategy_ui_interaction_mock(tmp_path: Path):
+    target = tmp_path / "file.pdf"
+    target.write_bytes(b"old")
+
+    resolved, strategy = resolve_final_output_path(
+        target,
+        "ask",
+        ask_user_choice=lambda: "increment",
+    )
+
+    assert strategy == "increment"
+    assert resolved == tmp_path / "file (2).pdf"
+
+
+def test_status_updates(tmp_path: Path, monkeypatch):
+    temp_path = tmp_path / "tmp" / "scan_tmp.pdf"
+    final_path = tmp_path / "out" / "file.pdf"
+    statuses: list[str] = []
+
+    def fake_run(_cmd: str, output_path: Path) -> None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"%PDF-1.7 mock")
+
+    monkeypatch.setattr("tc_scanner_launcher.run_scan", fake_run)
+    perform_scan_with_temp(
+        cmd_template="scanner --output {output_path}",
+        temp_output_path=temp_path,
+        final_output_path=final_path,
+        status_callback=statuses.append,
+    )
+    assert statuses == ["Сканування...", "Обробка файлу..."]
+
+
+def test_validate_scan_requirements():
+    ctx = FolderContext(date="10.01.25", episode="1", tags=["СЗ"], section="01")
+    assert validate_scan_requirements(ctx, "СЗ") is None
+    assert "дата" in validate_scan_requirements(FolderContext(date="", episode="1"), "СЗ")
+
+
+def test_format_scan_process_error():
+    err = subprocess.CalledProcessError(1, "scan", stderr="Не знайдено пристрій Pantum")
+    text = format_scan_process_error(err)
+    assert "Не знайдено пристрій Pantum" in text
+
+
+def test_cleanup_temp_files(tmp_path: Path):
+    temp_dir = tmp_path / "tmp_scans"
+    temp_dir.mkdir()
+    (temp_dir / "a.pdf").write_bytes(b"1")
+    (temp_dir / "b.pdf").write_bytes(b"2")
+    removed = cleanup_temp_files(temp_dir)
+    assert removed == 2
