@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-"""TC scanner helper: menu for scan types + automatic filename generation.
-
-Designed to be launched from Total Commander button.
-"""
 from __future__ import annotations
 
 import json
@@ -45,47 +41,43 @@ class FolderContext:
     section: str = ""
 
     def as_dict(self) -> Dict[str, str]:
-        return {
-            "date": self.date,
-            "episode": self.episode,
-            "section": self.section,
-        }
+        return {"date": self.date, "episode": self.episode, "section": self.section}
 
 
 DEFAULT_CONFIG = {
-    "scan_command": "",  # Example: "naps2.console --output {output_path}"
+    "scan_command": "",
     "output_extension": "pdf",
     "doc_types": [
         {"key": "vvzv", "label": "ВВЗВ", "code": "001", "template": "{code}_{label}_{date}_{episode}_{tag}"},
         {"key": "vvm", "label": "ВВМ", "code": "002", "template": "{code}_{label}_{date}_{episode}_{tag}"},
-        {
-            "key": "zalyshkova_vartist",
-            "label": "Відомість залишкової вартості",
-            "code": "003",
-            "template": "{code}_{label}_{date}_{episode}_{tag}",
-        },
+        {"key": "zalyshkova_vartist", "label": "Відомість залишкової вартості", "code": "003", "template": "{code}_{label}_{date}_{episode}_{tag}"},
         {"key": "yeas", "label": "ЄАС", "code": "004", "template": "{code}_{label}_{date}_{episode}_{tag}"},
         {"key": "as", "label": "АС", "code": "005", "template": "{code}_{label}_{date}_{episode}_{tag}"},
-        {
-            "key": "extract_losses",
-            "label": "витяг з книги втрат",
-            "code": "006",
-            "template": "{code}_{section}_{label}_{date}_{episode}_{tag}",
-        },
-        {
-            "key": "extract_shortages",
-            "label": "витяг з книги нестач",
-            "code": "007",
-            "template": "{code}_{section}_{label}_{date}_{episode}_{tag}",
-        },
+        {"key": "extract_losses", "label": "витяг з книги втрат", "code": "006", "template": "{code}_{section}_{label}_{date}_{episode}_{tag}"},
+        {"key": "extract_shortages", "label": "витяг з книги нестач", "code": "007", "template": "{code}_{section}_{label}_{date}_{episode}_{tag}"},
         {"key": "order", "label": "Наказ", "code": "008", "template": "{code}_{label}_{date}_{episode}_{tag}"},
     ],
 }
 
-TOP_FOLDER_RE = re.compile(
-    r"^(?P<id>\d+?)_(?P<date>\d{2}\.\d{2}\.\d{2})_(?P<episode>\d+?)_(?P<rest>.+)$"
-)
+TOP_FOLDER_RE = re.compile(r"^(?P<id>\d+?)_(?P<date>\d{2}\.\d{2}\.\d{2})_(?P<episode>\d+?)_(?P<rest>.+)$")
 SECTION_RE = re.compile(r"^(?P<section>\d{2})[_\s].+$")
+
+
+def _normalize_scan_command(value: str) -> str:
+    value = value.strip()
+    # fix mistakenly double-escaped quotes in config like \"{output_path}\"
+    value = value.replace(r'\\"{output_path}\\"', r'"{output_path}"')
+    value = value.replace(r'\\"', r'\"')
+    return value
+
+
+def _clean_target_dir(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+        value = value[1:-1]
+    # common TC/VBS case: trailing backslash before closing quote becomes literal quote in arg
+    value = value.replace('"', '')
+    return value
 
 
 def load_config() -> dict:
@@ -93,18 +85,22 @@ def load_config() -> dict:
         save_config(DEFAULT_CONFIG)
         return DEFAULT_CONFIG
     with CONFIG_PATH.open("r", encoding="utf-8") as fh:
-        return json.load(fh)
+        cfg = json.load(fh)
+    cfg["scan_command"] = _normalize_scan_command(cfg.get("scan_command", ""))
+    return cfg
 
 
 def save_config(cfg: dict) -> None:
+    cfg = dict(cfg)
+    cfg["scan_command"] = _normalize_scan_command(cfg.get("scan_command", ""))
     with CONFIG_PATH.open("w", encoding="utf-8") as fh:
         json.dump(cfg, fh, ensure_ascii=False, indent=2)
 
 
 def sanitize_part(value: str) -> str:
     value = value.strip()
-    value = re.sub(r"[\\/:*?\"<>|]+", "-", value)
-    value = re.sub(r"\s+", " ", value)
+    value = re.sub(r'[\\/:*?"<>|]+', '-', value)
+    value = re.sub(r'\s+', ' ', value)
     return value
 
 
@@ -148,45 +144,9 @@ def build_filename(doc_type: dict, ctx: FolderContext, tag: str) -> str:
 
 
 def _build_scan_args(cmd_template: str, output_path: Path) -> str | list[str]:
-    output_str = str(output_path)
-
-    def quote_arg(value: str) -> str:
-        if sys.platform.startswith("win"):
-            return subprocess.list2cmdline([value])
-        return shlex.quote(value)
-
-    # Support legacy {output_path} and make it resilient when users forget
-    # to quote it in scan_command (especially important for paths with spaces).
-    token = "{output_path}"
-    quoted_output = quote_arg(output_str)
-    cmd_parts: list[str] = []
-    pos = 0
-    while True:
-        idx = cmd_template.find(token, pos)
-        if idx < 0:
-            cmd_parts.append(cmd_template[pos:])
-            break
-
-        cmd_parts.append(cmd_template[pos:idx])
-        end_idx = idx + len(token)
-        prev_char = cmd_template[idx - 1] if idx > 0 else ""
-        next_char = cmd_template[end_idx] if end_idx < len(cmd_template) else ""
-
-        # If placeholder is already wrapped in quotes, inject raw path.
-        if prev_char in {'"', "'"} and next_char in {'"', "'"}:
-            cmd_parts.append(output_str)
-        else:
-            cmd_parts.append(quoted_output)
-
-        pos = end_idx
-
-    cmd = "".join(cmd_parts)
-
-    # On Windows, keep the command as a single string so CreateProcess receives
-    # proper quoting (e.g. --device "Pantum"), matching behavior from CMD.
+    cmd = _normalize_scan_command(cmd_template).format(output_path=str(output_path))
     if sys.platform.startswith("win"):
         return cmd
-
     return shlex.split(cmd, posix=True)
 
 
@@ -194,25 +154,17 @@ def run_scan(cmd_template: str, output_path: Path) -> None:
     args = _build_scan_args(cmd_template, output_path)
     if not args:
         raise ValueError("Команда сканування порожня")
-
-    kwargs = {
-        "check": True,
-        "shell": False,
-    }
+    kwargs = {"check": True, "shell": False}
     if sys.platform.startswith("win"):
         kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-
     subprocess.run(args, **kwargs)
 
 
 class TextEditHelper:
-    """Reusable text-edit UX for Entry/Text widgets (context menu + hotkeys)."""
-
     def __init__(self, root: Tk):
         self.root = root
         self._menu = Menu(root, tearoff=0)
         self._widget: Entry | Text | None = None
-
         self._menu.add_command(label="Вирізати", command=lambda: self._cut(self._widget))
         self._menu.add_command(label="Копіювати", command=lambda: self._copy(self._widget))
         self._menu.add_command(label="Вставити", command=lambda: self._paste(self._widget))
@@ -223,7 +175,6 @@ class TextEditHelper:
     def bind(self, widget: Entry | Text) -> None:
         widget.bind("<Button-1>", lambda e: self._focus_widget(e.widget), add="+")
         widget.bind("<Button-3>", self._show_menu, add="+")
-
         for seq in ("<Control-a>", "<Control-A>"):
             widget.bind(seq, self._on_select_all, add="+")
         for seq in ("<Control-c>", "<Control-C>", "<Control-Insert>"):
@@ -276,21 +227,8 @@ class TextEditHelper:
         try:
             widget.event_generate("<<Copy>>")
             return
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
-
-        selected_text = ""
-        try:
-            if isinstance(widget, Entry):
-                selected_text = widget.selection_get()
-            else:
-                selected_text = widget.get("sel.first", "sel.last")
-        except Exception:  # noqa: BLE001
-            selected_text = ""
-
-        if selected_text:
-            self.root.clipboard_clear()
-            self.root.clipboard_append(selected_text)
 
     def _cut(self, widget: Entry | Text | None) -> None:
         if widget is None:
@@ -298,17 +236,8 @@ class TextEditHelper:
         try:
             widget.event_generate("<<Cut>>")
             return
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
-
-        self._copy(widget)
-        try:
-            if isinstance(widget, Entry):
-                widget.delete("sel.first", "sel.last")
-            else:
-                widget.delete("sel.first", "sel.last")
-        except Exception:  # noqa: BLE001
-            return
 
     def _paste(self, widget: Entry | Text | None) -> None:
         if widget is None:
@@ -316,26 +245,8 @@ class TextEditHelper:
         try:
             widget.event_generate("<<Paste>>")
             return
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
-
-        try:
-            clip_text = self.root.clipboard_get()
-        except Exception:  # noqa: BLE001
-            return
-
-        if isinstance(widget, Entry):
-            try:
-                widget.delete("sel.first", "sel.last")
-            except Exception:  # noqa: BLE001
-                pass
-            widget.insert(INSERT, clip_text)
-        else:
-            try:
-                widget.delete("sel.first", "sel.last")
-            except Exception:  # noqa: BLE001
-                pass
-            widget.insert(INSERT, clip_text)
 
     def _clear(self, widget: Entry | Text | None) -> None:
         if widget is None:
@@ -351,35 +262,27 @@ class ScannerUI:
         self.cwd = cwd
         self.config = load_config()
         self.ctx = parse_context(cwd)
-
         self.root = Tk()
         self.root.title("TC Scanner")
         self.root.geometry("680x380")
         self.text_helper = TextEditHelper(self.root)
-
         self.doc_types = self.config.get("doc_types", [])
         self.current_doc: dict | None = None
-
         self.tag_var = StringVar(self.root)
         tags = self.ctx.tags or [""]
         self.tag_var.set(tags[0])
-
         self.preview_var = StringVar(self.root)
         self.custom_name_var = StringVar(self.root)
-
         self._build()
         self._refresh_preview()
 
     def _build(self) -> None:
         main = Frame(self.root)
         main.pack(fill=BOTH, expand=True, padx=10, pady=10)
-
         left = Frame(main)
         left.pack(side=LEFT, fill=BOTH, expand=True)
-
         right = Frame(main)
         right.pack(side=RIGHT, fill=BOTH, expand=True)
-
         Label(left, text="Що сканувати:", font=("Segoe UI", 10, "bold")).pack(anchor="w")
         self.doc_list = Listbox(left, height=12)
         self.doc_list.pack(fill=BOTH, expand=True, pady=(6, 0))
@@ -389,20 +292,16 @@ class ScannerUI:
         if self.doc_types:
             self.doc_list.selection_set(0)
             self._on_doc_changed()
-
         Label(right, text="Тег/підрозділ:", font=("Segoe UI", 10, "bold")).pack(anchor="w")
         tags = self.ctx.tags or ["(не знайдено)"]
         OptionMenu(right, self.tag_var, *tags, command=lambda _: self._refresh_preview()).pack(fill="x", pady=(6, 10))
-
         Label(right, text="Назва файлу:", font=("Segoe UI", 10, "bold")).pack(anchor="w")
         self.name_entry = Entry(right, textvariable=self.custom_name_var)
         self.name_entry.pack(fill="x", pady=(6, 2))
         self.text_helper.bind(self.name_entry)
         self.custom_name_var.trace_add("write", lambda *_: self._refresh_preview())
-
         Label(right, text="Прев'ю:").pack(anchor="w", pady=(8, 0))
         Label(right, textvariable=self.preview_var, wraplength=310, justify=LEFT, fg="#0b5").pack(anchor="w")
-
         btns = Frame(right)
         btns.pack(fill="x", pady=(14, 0))
         Button(btns, text="Сканувати", command=self._scan, bg="#2f7", font=("Segoe UI", 10, "bold")).pack(side=LEFT)
@@ -431,16 +330,14 @@ class ScannerUI:
         if not self.current_doc:
             messagebox.showerror("Помилка", "Оберіть тип документа")
             return
-        cmd = self.config.get("scan_command", "").strip()
+        cmd = _normalize_scan_command(self.config.get("scan_command", "")).strip()
         if not cmd:
             messagebox.showerror("Помилка", "Не налаштована команда сканування")
             return
-
         tag = self.tag_var.get() if self.tag_var.get() != "(не знайдено)" else ""
         auto_name = build_filename(self.current_doc, self.ctx, tag)
         name = sanitize_part(self.custom_name_var.get()) or auto_name
         output_path = self.cwd / f"{name}.{self.config.get('output_extension', 'pdf')}"
-
         try:
             run_scan(cmd, output_path)
             messagebox.showinfo("Готово", f"Файл створено:\n{output_path}")
@@ -455,13 +352,11 @@ class ScannerUI:
         wnd = Toplevel(self.root)
         wnd.title("Налаштування")
         wnd.geometry("720x460")
-
         Label(wnd, text="Команда сканування (використовуйте {output_path}):").pack(anchor="w", padx=10, pady=(10, 2))
         cmd_var = StringVar(wnd, self.config.get("scan_command", ""))
         cmd_entry = Entry(wnd, textvariable=cmd_var)
         cmd_entry.pack(fill="x", padx=10)
         self.text_helper.bind(cmd_entry)
-
         Label(wnd, text="JSON для типів документів:").pack(anchor="w", padx=10, pady=(10, 2))
         txt = ScrolledText(wnd, height=14, wrap="word")
         txt.pack(fill=BOTH, expand=True, padx=10)
@@ -473,12 +368,12 @@ class ScannerUI:
                 raw_docs = txt.get("1.0", END).rstrip("\n")
                 docs = json.loads(raw_docs)
                 self.config["doc_types"] = docs
-                self.config["scan_command"] = cmd_var.get().strip()
+                self.config["scan_command"] = _normalize_scan_command(cmd_var.get().strip())
                 save_config(self.config)
             except json.JSONDecodeError as exc:
                 messagebox.showerror("Помилка JSON", f"Невалідний JSON у типах документів:\n{exc}")
                 return
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 messagebox.showerror("Помилка", f"Не вдалося зберегти:\n{exc}")
                 return
             messagebox.showinfo("OK", "Налаштування збережено. Перезапустіть вікно.")
@@ -491,7 +386,8 @@ class ScannerUI:
 
 
 def main() -> int:
-    cwd = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path.cwd()
+    raw_cwd = sys.argv[1] if len(sys.argv) > 1 else str(Path.cwd())
+    cwd = Path(_clean_target_dir(raw_cwd)).resolve()
     ui = ScannerUI(cwd)
     ui.run()
     return 0
