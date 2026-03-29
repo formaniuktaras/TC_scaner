@@ -22,6 +22,7 @@ from tkinter import (
     Listbox,
     Menu,
     OptionMenu,
+    Radiobutton,
     RAISED,
     RIDGE,
     SUNKEN,
@@ -37,6 +38,7 @@ from app_config import AppConfig, ConfigValidationError, DocTypeConfig, load_con
 from naming_utils import build_document_filename, sanitize_part
 from scan_runtime import (
     append_scan_log,
+    build_scan_command,
     cleanup_temp_file,
     cleanup_temp_files,
     format_scan_process_error,
@@ -137,6 +139,13 @@ def collect_parse_warnings(ctx: FolderContext, tag: str, template: str | None = 
     return warnings
 
 
+def format_scan_mode_label(scan_cfg) -> str:
+    if scan_cfg.mode == "profile":
+        profile = scan_cfg.profile_name.strip() or "—"
+        return f"Режим сканування: профіль {profile}"
+    return f"Режим сканування: ручний ({scan_cfg.driver.upper()} / {scan_cfg.dpi} dpi)"
+
+
 class TextEditHelper:
     def __init__(self, root: Tk):
         self.root = root
@@ -200,6 +209,7 @@ class ScannerUI:
         self._build_context_block(main)
         self._build_result_block(main)
         self._build_action_block(main)
+        Label(self.root, text=format_scan_mode_label(self.app_config.scan), anchor="w", padx=8, fg="#555555").pack(fill="x", side="bottom")
 
         Label(self.root, textvariable=self.status_var, anchor="w", relief=SUNKEN, padx=8).pack(fill="x", side="bottom")
 
@@ -357,75 +367,140 @@ class ScannerUI:
     def _settings(self) -> None:
         wnd = Toplevel(self.root)
         wnd.title("Налаштування")
-        wnd.geometry("850x640")
+        wnd.geometry("920x700")
 
         mode_var = StringVar(wnd, self.app_config.ui.mode)
         Button(wnd, text="Розширені налаштування", command=lambda: mode_var.set("advanced")).pack(anchor="e", padx=10, pady=4)
 
         form = Frame(wnd)
         form.pack(fill="both", expand=True, padx=10, pady=6)
+        Label(form, text="scan_mode").grid(row=0, column=0, sticky="w")
+        scan_mode_var = StringVar(form, self.app_config.scan.mode)
+        mode_row = Frame(form)
+        mode_row.grid(row=0, column=1, sticky="w")
+        Radiobutton(mode_row, text="Профіль NAPS2", variable=scan_mode_var, value="profile").pack(side=LEFT)
+        Radiobutton(mode_row, text="Ручний режим", variable=scan_mode_var, value="manual").pack(side=LEFT, padx=8)
 
-        Label(form, text="driver").grid(row=0, column=0, sticky="w")
+        Label(form, text="naps2_exe").grid(row=1, column=0, sticky="w")
+        naps2_var = StringVar(form, self.app_config.scan.naps2_exe)
+        Entry(form, textvariable=naps2_var).grid(row=1, column=1, sticky="ew")
+        Label(form, text="profile_name").grid(row=2, column=0, sticky="w")
+        profile_var = StringVar(form, self.app_config.scan.profile_name)
+        profile_entry = Entry(form, textvariable=profile_var)
+        profile_entry.grid(row=2, column=1, sticky="ew")
+
+        Label(form, text="driver").grid(row=3, column=0, sticky="w")
         driver_var = StringVar(form, self.app_config.scan.driver)
-        OptionMenu(form, driver_var, "twain", "wia", "sane").grid(row=0, column=1, sticky="ew")
-        Label(form, text="device").grid(row=1, column=0, sticky="w")
+        driver_menu = OptionMenu(form, driver_var, "twain", "wia", "sane")
+        driver_menu.grid(row=3, column=1, sticky="ew")
+        Label(form, text="device").grid(row=4, column=0, sticky="w")
         device_var = StringVar(form, self.app_config.scan.device)
-        Entry(form, textvariable=device_var).grid(row=1, column=1, sticky="ew")
-        Label(form, text="dpi").grid(row=2, column=0, sticky="w")
+        device_entry = Entry(form, textvariable=device_var)
+        device_entry.grid(row=4, column=1, sticky="ew")
+        Label(form, text="dpi").grid(row=5, column=0, sticky="w")
         dpi_var = StringVar(form, str(self.app_config.scan.dpi))
-        Entry(form, textvariable=dpi_var).grid(row=2, column=1, sticky="ew")
-        Label(form, text="page_size").grid(row=3, column=0, sticky="w")
+        dpi_entry = Entry(form, textvariable=dpi_var)
+        dpi_entry.grid(row=5, column=1, sticky="ew")
+        Label(form, text="page_size").grid(row=6, column=0, sticky="w")
         page_size_var = StringVar(form, self.app_config.scan.page_size)
-        Entry(form, textvariable=page_size_var).grid(row=3, column=1, sticky="ew")
-        Label(form, text="bitdepth").grid(row=4, column=0, sticky="w")
+        page_size_entry = Entry(form, textvariable=page_size_var)
+        page_size_entry.grid(row=6, column=1, sticky="ew")
+        Label(form, text="bitdepth").grid(row=7, column=0, sticky="w")
         bitdepth_var = StringVar(form, self.app_config.scan.bitdepth)
-        Entry(form, textvariable=bitdepth_var).grid(row=4, column=1, sticky="ew")
-        Label(form, text="output_extension").grid(row=5, column=0, sticky="w")
+        bitdepth_entry = Entry(form, textvariable=bitdepth_var)
+        bitdepth_entry.grid(row=7, column=1, sticky="ew")
+        Label(form, text="output_extension").grid(row=8, column=0, sticky="w")
         ext_var = StringVar(form, self.app_config.scan.output_extension)
-        Entry(form, textvariable=ext_var).grid(row=5, column=1, sticky="ew")
+        Entry(form, textvariable=ext_var).grid(row=8, column=1, sticky="ew")
 
-        Label(form, text="temp_dir").grid(row=6, column=0, sticky="w")
+        Label(form, text="temp_dir").grid(row=9, column=0, sticky="w")
         temp_var = StringVar(form, self.app_config.paths.temp_dir)
-        Entry(form, textvariable=temp_var).grid(row=6, column=1, sticky="ew")
-        Label(form, text="log_file").grid(row=7, column=0, sticky="w")
+        Entry(form, textvariable=temp_var).grid(row=9, column=1, sticky="ew")
+        Label(form, text="log_file").grid(row=10, column=0, sticky="w")
         log_var = StringVar(form, self.app_config.paths.log_file)
-        Entry(form, textvariable=log_var).grid(row=7, column=1, sticky="ew")
+        Entry(form, textvariable=log_var).grid(row=10, column=1, sticky="ew")
 
-        Label(form, text="duplicate_strategy").grid(row=8, column=0, sticky="w")
+        Label(form, text="duplicate_strategy").grid(row=11, column=0, sticky="w")
         dup_var = StringVar(form, self.app_config.behavior.duplicate_strategy)
-        OptionMenu(form, dup_var, "ask", "overwrite", "increment").grid(row=8, column=1, sticky="ew")
+        OptionMenu(form, dup_var, "ask", "overwrite", "increment").grid(row=11, column=1, sticky="ew")
 
         allow_incomplete_var = BooleanVar(form, self.app_config.behavior.allow_incomplete_context)
-        Checkbutton(form, text="allow_incomplete_context", variable=allow_incomplete_var).grid(row=9, column=1, sticky="w")
+        Checkbutton(form, text="allow_incomplete_context", variable=allow_incomplete_var).grid(row=12, column=1, sticky="w")
         replace_spaces_var = StringVar(form, self.app_config.naming.replace_spaces)
-        Label(form, text="replace_spaces").grid(row=10, column=0, sticky="w")
-        Entry(form, textvariable=replace_spaces_var).grid(row=10, column=1, sticky="ew")
+        Label(form, text="replace_spaces").grid(row=13, column=0, sticky="w")
+        Entry(form, textvariable=replace_spaces_var).grid(row=13, column=1, sticky="ew")
         max_length_var = StringVar(form, str(self.app_config.naming.max_length))
-        Label(form, text="max_length").grid(row=11, column=0, sticky="w")
-        Entry(form, textvariable=max_length_var).grid(row=11, column=1, sticky="ew")
+        Label(form, text="max_length").grid(row=14, column=0, sticky="w")
+        Entry(form, textvariable=max_length_var).grid(row=14, column=1, sticky="ew")
 
         remember_doc_var = BooleanVar(form, self.app_config.ui.remember_last_doc_type)
         remember_tag_var = BooleanVar(form, self.app_config.ui.remember_last_tag)
         focus_var = BooleanVar(form, self.app_config.ui.focus_name_on_start)
-        Checkbutton(form, text="remember_last_doc_type", variable=remember_doc_var).grid(row=12, column=1, sticky="w")
-        Checkbutton(form, text="remember_last_tag", variable=remember_tag_var).grid(row=13, column=1, sticky="w")
-        Checkbutton(form, text="focus_name_on_start", variable=focus_var).grid(row=14, column=1, sticky="w")
+        Checkbutton(form, text="remember_last_doc_type", variable=remember_doc_var).grid(row=15, column=1, sticky="w")
+        Checkbutton(form, text="remember_last_tag", variable=remember_tag_var).grid(row=16, column=1, sticky="w")
+        Checkbutton(form, text="focus_name_on_start", variable=focus_var).grid(row=17, column=1, sticky="w")
 
-        Label(form, text="advanced: command_template").grid(row=15, column=0, sticky="w")
+        Label(form, text="advanced: command_template").grid(row=18, column=0, sticky="w")
         cmd_var = StringVar(form, self.app_config.scan.command_template)
-        Entry(form, textvariable=cmd_var).grid(row=15, column=1, sticky="ew")
-        Label(form, text="advanced: network_prefixes (comma)").grid(row=16, column=0, sticky="w")
+        cmd_entry = Entry(form, textvariable=cmd_var)
+        cmd_entry.grid(row=18, column=1, sticky="ew")
+        multi_page_var = BooleanVar(form, self.app_config.scan.multi_page)
+        Checkbutton(form, text="advanced: multi_page", variable=multi_page_var).grid(row=19, column=1, sticky="w")
+        force_scan_overwrite_var = BooleanVar(form, self.app_config.scan.force_overwrite_flag)
+        Checkbutton(form, text="advanced: force_overwrite_flag", variable=force_scan_overwrite_var).grid(row=20, column=1, sticky="w")
+        Label(form, text="advanced: network_prefixes (comma)").grid(row=21, column=0, sticky="w")
         prefixes_var = StringVar(form, ",".join(self.app_config.paths.network_prefixes))
-        Entry(form, textvariable=prefixes_var).grid(row=16, column=1, sticky="ew")
+        prefixes_entry = Entry(form, textvariable=prefixes_var)
+        prefixes_entry.grid(row=21, column=1, sticky="ew")
         force_temp_var = BooleanVar(form, self.app_config.paths.force_temp_for_network)
-        Checkbutton(form, text="force_temp_for_network", variable=force_temp_var).grid(row=17, column=1, sticky="w")
+        force_temp_chk = Checkbutton(form, text="advanced: force_temp_for_network", variable=force_temp_var)
+        force_temp_chk.grid(row=22, column=1, sticky="w")
 
-        Label(form, text="doc_types JSON").grid(row=18, column=0, sticky="nw")
+        Label(form, text="doc_types JSON").grid(row=23, column=0, sticky="nw")
         doc_editor = ScrolledText(form, height=10, wrap="word")
-        doc_editor.grid(row=18, column=1, sticky="nsew")
+        doc_editor.grid(row=23, column=1, sticky="nsew")
         doc_editor.insert("1.0", json.dumps([d.__dict__ for d in self.app_config.doc_types], ensure_ascii=False, indent=2))
         form.columnconfigure(1, weight=1)
-        form.rowconfigure(18, weight=1)
+        form.rowconfigure(23, weight=1)
+
+        def update_mode_fields() -> None:
+            is_profile = scan_mode_var.get() == "profile"
+            profile_state = "normal" if is_profile else "disabled"
+            manual_state = "disabled" if is_profile else "normal"
+            profile_entry.configure(state=profile_state)
+            for widget in [driver_menu, device_entry, dpi_entry, page_size_entry, bitdepth_entry]:
+                widget.configure(state=manual_state)
+
+        def update_advanced_visibility() -> None:
+            show_advanced = mode_var.get() == "advanced"
+            state = "normal" if show_advanced else "disabled"
+            for widget in [cmd_entry, prefixes_entry, force_temp_chk]:
+                widget.configure(state=state)
+            doc_editor.configure(state=state)
+
+        def test_naps2() -> None:
+            try:
+                naps2_path = Path(naps2_var.get().strip())
+                if not naps2_path.exists():
+                    raise ValueError("Файл naps2_exe не існує")
+                preview_cfg = AppConfig.from_dict(self.app_config.to_dict())
+                preview_cfg.scan.mode = scan_mode_var.get().strip()
+                preview_cfg.scan.naps2_exe = naps2_var.get().strip()
+                preview_cfg.scan.profile_name = profile_var.get().strip()
+                preview_cfg.scan.driver = driver_var.get().strip()
+                preview_cfg.scan.device = device_var.get().strip()
+                preview_cfg.scan.dpi = int(dpi_var.get().strip())
+                preview_cfg.scan.page_size = page_size_var.get().strip()
+                preview_cfg.scan.bitdepth = bitdepth_var.get().strip()
+                preview_cfg.scan.output_extension = ext_var.get().strip()
+                preview_cfg.scan.command_template = cmd_var.get().strip()
+                preview_cfg.scan.force_overwrite_flag = force_scan_overwrite_var.get()
+                preview_cfg.validate()
+                subprocess.run([str(naps2_path), "--help"], check=True, capture_output=True, text=True)
+                preview_cmd = build_scan_command(preview_cfg, Path("C:/temp/preview_scan.pdf"))
+                messagebox.showinfo("OK", f"NAPS2 доступний.\nPreview:\n{preview_cmd}")
+            except Exception as exc:
+                messagebox.showerror("Перевірка NAPS2", str(exc))
 
         def save_settings() -> None:
             try:
@@ -434,8 +509,13 @@ class ScannerUI:
                 self.app_config.scan.dpi = int(dpi_var.get().strip())
                 self.app_config.scan.page_size = page_size_var.get().strip()
                 self.app_config.scan.bitdepth = bitdepth_var.get().strip()
+                self.app_config.scan.mode = scan_mode_var.get().strip()
+                self.app_config.scan.naps2_exe = naps2_var.get().strip()
+                self.app_config.scan.profile_name = profile_var.get().strip()
                 self.app_config.scan.output_extension = ext_var.get().strip()
                 self.app_config.scan.command_template = cmd_var.get().strip()
+                self.app_config.scan.multi_page = multi_page_var.get()
+                self.app_config.scan.force_overwrite_flag = force_scan_overwrite_var.get()
                 self.app_config.paths.temp_dir = temp_var.get().strip()
                 self.app_config.paths.log_file = log_var.get().strip()
                 self.app_config.paths.force_temp_for_network = force_temp_var.get()
@@ -458,6 +538,11 @@ class ScannerUI:
             messagebox.showinfo("OK", "Налаштування збережено")
             wnd.destroy()
 
+        scan_mode_var.trace_add("write", lambda *_: update_mode_fields())
+        mode_var.trace_add("write", lambda *_: update_advanced_visibility())
+        update_mode_fields()
+        update_advanced_visibility()
+        Button(wnd, text="Перевірити NAPS2", command=test_naps2).pack(padx=10, pady=4, anchor="w")
         Button(wnd, text="Зберегти", command=save_settings).pack(padx=10, pady=8, anchor="e")
 
     def _scan(self) -> None:

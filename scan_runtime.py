@@ -65,14 +65,22 @@ def get_temp_output_path(app_config: AppConfig, extension: str = "pdf") -> Path:
 
 
 def validate_scan_config(scan: ScanConfig) -> None:
-    if "{output_path}" not in scan.command_template:
+    if scan.command_template and "{output_path}" not in scan.command_template:
         raise ValueError("SCAN: command_template має містити {output_path}")
+    if scan.mode not in {"profile", "manual"}:
+        raise ValueError("SCAN: mode має бути profile/manual")
 
 
-def build_scan_command(app_config: AppConfig, output_path: Path) -> str | list[str]:
-    scan = app_config.scan
-    validate_scan_config(scan)
-    cmd = scan.command_template.format(
+def _append_force_if_needed(cmd: str, force_overwrite_flag: bool) -> str:
+    if force_overwrite_flag and "--force" not in cmd:
+        return f"{cmd} --force"
+    return cmd
+
+
+def _format_command_template(scan: ScanConfig, output_path: Path) -> str:
+    return scan.command_template.format(
+        naps2_exe=scan.naps2_exe,
+        profile_name=scan.profile_name,
         driver=scan.driver,
         device=scan.device,
         dpi=scan.dpi,
@@ -80,6 +88,34 @@ def build_scan_command(app_config: AppConfig, output_path: Path) -> str | list[s
         bitdepth=scan.bitdepth,
         output_path=str(output_path),
     )
+
+
+def build_profile_scan_command(scan: ScanConfig, output_path: Path) -> str:
+    if scan.command_template.strip():
+        cmd = _format_command_template(scan, output_path)
+    else:
+        cmd = f'"{scan.naps2_exe}" -p "{scan.profile_name}" -o "{output_path}"'
+    return _append_force_if_needed(cmd, scan.force_overwrite_flag)
+
+
+def build_manual_scan_command(scan: ScanConfig, output_path: Path) -> str:
+    if scan.command_template.strip():
+        cmd = _format_command_template(scan, output_path)
+    else:
+        cmd = (
+            f'"{scan.naps2_exe}" --noprofile --driver {scan.driver} --device "{scan.device}" '
+            f"--pagesize {scan.page_size} --dpi {scan.dpi} --bitdepth {scan.bitdepth} -o \"{output_path}\""
+        )
+    return _append_force_if_needed(cmd, scan.force_overwrite_flag)
+
+
+def build_scan_command(app_config: AppConfig, output_path: Path) -> str | list[str]:
+    scan = app_config.scan
+    validate_scan_config(scan)
+    if scan.mode == "profile":
+        cmd = build_profile_scan_command(scan, output_path)
+    else:
+        cmd = build_manual_scan_command(scan, output_path)
     if sys.platform.startswith("win"):
         return cmd
     return shlex.split(cmd, posix=True)

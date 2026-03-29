@@ -1,12 +1,17 @@
 {
   "scan": {
-    "command_template": "C:\\PROGRA~1\\NAPS2\\NAPS2.Console.exe --noprofile --driver {driver} --device \"{device}\" --pagesize {page_size} --dpi {dpi} --bitdepth {bitdepth} -o \"{output_path}\" --force",
+    "mode": "profile",
+    "naps2_exe": "C:\\PROGRA~1\\NAPS2\\NAPS2.Console.exe",
+    "profile_name": "DR",
+    "command_template": "",
     "driver": "twain",
     "device": "Pantum",
     "dpi": 300,
     "page_size": "a4",
     "bitdepth": "gray",
-    "output_extension": "pdf"
+    "output_extension": "pdf",
+    "multi_page": true,
+    "force_overwrite_flag": true
   },
   "paths": {
     "temp_dir": "tmp_scans",

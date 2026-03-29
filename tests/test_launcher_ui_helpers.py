@@ -3,8 +3,10 @@ from tc_scanner_launcher import (
     collect_parse_warnings,
     format_context_line,
     format_filename_preview,
+    format_scan_mode_label,
     select_initial_tag,
 )
+from app_config import ScanConfig
 
 
 def test_select_initial_tag_uses_last_saved_value():
@@ -26,3 +28,10 @@ def test_collect_parse_warnings_respects_missing_context():
     assert "не знайдено підрозділ" in warnings
     assert "не знайдено дату" in warnings
     assert "не знайдено секцію" in warnings
+
+
+def test_format_scan_mode_label():
+    profile = ScanConfig(mode="profile", profile_name="DR")
+    assert format_scan_mode_label(profile) == "Режим сканування: профіль DR"
+    manual = ScanConfig(mode="manual", driver="wia", dpi=300)
+    assert format_scan_mode_label(manual) == "Режим сканування: ручний (WIA / 300 dpi)"
