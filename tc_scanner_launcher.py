@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import json
 import csv
+import json
 import logging
 import os
 import re
@@ -10,8 +10,9 @@ import shlex
 import shutil
 import subprocess
 import sys
-from datetime import datetime
+import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from tkinter import (
     BOTH,
@@ -73,6 +74,8 @@ DEFAULT_CONFIG = {
 
 DATE_RE = re.compile(r"^\d{2}\.\d{2}\.\d{2}$")
 SECTION_RE = re.compile(r"^(?P<section>\d{2})[_\s].+$")
+PLACEHOLDER_RE = re.compile(r"\{([^{}]+)\}")
+ALLOWED_TEMPLATE_PLACEHOLDERS = {"code", "label", "date", "episode", "section", "tag"}
 LOG_FIELDS = [
     "timestamp",
     "status",
@@ -90,7 +93,6 @@ LOG_FIELDS = [
 
 def _normalize_scan_command(value: str) -> str:
     value = value.strip()
-    # fix mistakenly double-escaped quotes in config like \"{output_path}\"
     value = value.replace(r'\\"{output_path}\\"', r'"{output_path}"')
     value = value.replace(r'\\"', r'\"')
     return value
@@ -100,8 +102,7 @@ def _clean_target_dir(value: str) -> str:
     value = value.strip()
     if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
         value = value[1:-1]
-    # common TC/VBS case: trailing backslash before closing quote becomes literal quote in arg
-    value = value.replace('"', '')
+    value = value.replace('"', "")
     return value
 
 
@@ -116,9 +117,8 @@ def load_config() -> dict:
     merged_ui_state = dict(DEFAULT_CONFIG.get("ui_state", {}))
     merged_ui_state.update(cfg.get("ui_state", {}))
     merged["ui_state"] = merged_ui_state
-    cfg = merged
-    cfg["scan_command"] = _normalize_scan_command(cfg.get("scan_command", ""))
-    return cfg
+    merged["scan_command"] = _normalize_scan_command(merged.get("scan_command", ""))
+    return merged
 
 
 def save_config(cfg: dict) -> None:
@@ -142,13 +142,13 @@ def parse_context(folder: Path) -> FolderContext:
     section = ""
 
     for part in [folder] + list(folder.parents):
-        parts = part.name.split("_")
+        parts = [p.strip() for p in part.name.split("_") if p.strip()]
         if len(parts) < 3:
             continue
-
-        date = parts[1].strip()
-        episode = parts[2].strip()
-
+        date_candidate = parts[1]
+        episode_candidate = parts[2]
+        date = date_candidate
+        episode = episode_candidate
         if not DATE_RE.match(date):
             logging.warning("parse_warning: invalid date format in folder '%s': '%s'", part.name, date)
 
@@ -221,6 +221,11 @@ def cleanup_temp_files(temp_dir: Path) -> int:
     return removed
 
 
+def cleanup_temp_file(temp_path: Path) -> None:
+    if temp_path.exists():
+        temp_path.unlink(missing_ok=True)
+
+
 def select_initial_doc_index(doc_types: list[dict], last_doc_type: str) -> int:
     for idx, doc_type in enumerate(doc_types):
         if doc_type.get("key", "") == last_doc_type:
@@ -236,13 +241,16 @@ def select_initial_tag(tags: list[str], last_tag: str) -> str:
     return tags[0]
 
 
-def validate_scan_requirements(ctx: FolderContext, tag: str) -> str | None:
+def validate_context_for_doc_type(ctx: FolderContext, tag: str, doc_type: dict) -> str | None:
     if not ctx.date:
-        return "Не знайдена дата в структурі папок"
+        return "Не знайдено дату справи в назві папки"
     if not ctx.episode:
-        return "Не знайдений епізод в структурі папок"
+        return "Не знайдено епізод у назві папки"
     if not tag:
-        return "Не вибрано тег"
+        return "Не знайдено підрозділ у суфіксі папки"
+    template = doc_type.get("template", "")
+    if "{section}" in template and not ctx.section:
+        return "Не знайдено секцію 01_..."
     return None
 
 
@@ -290,6 +298,39 @@ def resolve_final_output_path(
     return None, "cancelled"
 
 
+def _resolve_relative_to_launcher(path_value: str, fallback: str) -> Path:
+    value = (path_value or fallback).strip() or fallback
+    candidate = Path(value)
+    if candidate.is_absolute():
+        return candidate
+    return Path(__file__).resolve().parent / candidate
+
+
+def get_temp_output_path(temp_dir_value: str, extension: str = "pdf") -> Path:
+    ext = extension.lstrip(".") or "pdf"
+    temp_dir = _resolve_relative_to_launcher(temp_dir_value, "tmp_scans")
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    return temp_dir / f"scan_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.{ext}"
+
+
+def validate_temp_scan_result(temp_output_path: Path) -> None:
+    if not temp_output_path.exists():
+        raise FileNotFoundError(f"Тимчасовий файл сканування не створено: {temp_output_path}")
+    if temp_output_path.stat().st_size <= 0:
+        raise ValueError(f"Тимчасовий файл сканування порожній: {temp_output_path}")
+
+
+def move_temp_to_final(temp_output_path: Path, final_output_path: Path) -> Path:
+    final_output_path.parent.mkdir(parents=True, exist_ok=True)
+    if final_output_path.exists():
+        final_output_path.unlink()
+    try:
+        shutil.move(str(temp_output_path), str(final_output_path))
+    except Exception as exc:
+        raise RuntimeError(f"Не вдалося перемістити файл у цільову папку: {exc}") from exc
+    return final_output_path
+
+
 def append_scan_log(log_path: Path, entry: dict) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     file_exists = log_path.exists()
@@ -301,33 +342,25 @@ def append_scan_log(log_path: Path, entry: dict) -> None:
         writer.writerow(row)
 
 
-def perform_scan_with_temp(
-    *,
-    cmd_template: str,
-    temp_output_path: Path,
-    final_output_path: Path,
-    status_callback: Callable[[str], None] | None = None,
-) -> Path:
-    temp_output_path.parent.mkdir(parents=True, exist_ok=True)
-    if temp_output_path.exists():
-        temp_output_path.unlink()
-    if status_callback:
-        status_callback("Сканування...")
-    run_scan(cmd_template, temp_output_path)
-    if not temp_output_path.exists():
-        raise FileNotFoundError(f"Тимчасовий файл сканування не створено: {temp_output_path}")
-    if temp_output_path.stat().st_size == 0:
-        raise ValueError(f"Тимчасовий файл сканування порожній: {temp_output_path}")
-    if status_callback:
-        status_callback("Обробка файлу...")
-    final_output_path.parent.mkdir(parents=True, exist_ok=True)
-    if final_output_path.exists():
-        final_output_path.unlink()
-    try:
-        shutil.move(str(temp_output_path), str(final_output_path))
-    except Exception as exc:
-        raise RuntimeError(f"Не вдалося перемістити файл у цільову папку: {exc}") from exc
-    return final_output_path
+def validate_doc_types(doc_types: object) -> tuple[bool, str | None]:
+    if not isinstance(doc_types, list):
+        return False, "doc_types має бути списком об'єктів"
+    required = {"key", "label", "code", "template"}
+    for idx, item in enumerate(doc_types, start=1):
+        if not isinstance(item, dict):
+            return False, f"Елемент doc_types #{idx} має бути об'єктом"
+        missing = required - set(item.keys())
+        if missing:
+            return False, f"Елемент doc_types #{idx} не містить поля: {', '.join(sorted(missing))}"
+        template = str(item.get("template", ""))
+        placeholders = set(PLACEHOLDER_RE.findall(template))
+        unknown = placeholders - ALLOWED_TEMPLATE_PLACEHOLDERS
+        if unknown:
+            return (
+                False,
+                f"Елемент doc_types #{idx} містить невідомі плейсхолдери: {', '.join(sorted(unknown))}",
+            )
+    return True, None
 
 
 class TextEditHelper:
@@ -396,7 +429,6 @@ class TextEditHelper:
             return
         try:
             widget.event_generate("<<Copy>>")
-            return
         except Exception:
             pass
 
@@ -405,7 +437,6 @@ class TextEditHelper:
             return
         try:
             widget.event_generate("<<Cut>>")
-            return
         except Exception:
             pass
 
@@ -414,7 +445,6 @@ class TextEditHelper:
             return
         try:
             widget.event_generate("<<Paste>>")
-            return
         except Exception:
             pass
 
@@ -434,72 +464,94 @@ class ScannerUI:
         self.ctx = parse_context(cwd)
         self.root = Tk()
         self.root.title("TC Scanner")
-        self.root.geometry("680x380")
+        self.root.geometry("720x420")
         self.text_helper = TextEditHelper(self.root)
         self.doc_types = self.config.get("doc_types", [])
         self.current_doc: dict | None = None
-        self.last_output_path: Path | None = None
         self.tag_var = StringVar(self.root)
-        tags = self.ctx.tags or []
+        self.tags = self.ctx.tags or []
         ui_state = self.config.get("ui_state", {})
-        self.tags = tags
-        self.tag_var.set(select_initial_tag(tags, ui_state.get("last_tag", "")))
+        self.tag_var.set(select_initial_tag(self.tags, ui_state.get("last_tag", "")))
         self.preview_var = StringVar(self.root)
         self.custom_name_var = StringVar(self.root)
         self.status_var = StringVar(self.root, "Готово")
         self._build()
         self.name_entry.focus_set()
+        if not self.ctx.date or not self.ctx.episode:
+            log_path = _resolve_relative_to_launcher(self.config.get("log_file", ""), "scan_log.csv")
+            append_scan_log(
+                log_path,
+                {
+                    "timestamp": datetime.now().isoformat(timespec="seconds"),
+                    "status": "parse_warning",
+                    "current_folder": str(self.cwd),
+                    "document_key": "",
+                    "document_label": "",
+                    "selected_tag": "",
+                    "generated_filename": "",
+                    "temp_output_path": "",
+                    "final_output_path": "",
+                    "duplicate_strategy": self.config.get("duplicate_strategy", "ask"),
+                    "message": "Контекст папки розпізнано частково",
+                },
+            )
         self._refresh_preview()
 
     def _build(self) -> None:
         main = Frame(self.root)
-        main.pack(fill=BOTH, expand=True, padx=12, pady=12)
+        main.pack(fill=BOTH, expand=True, padx=16, pady=14)
+
         left = Frame(main)
-        left.pack(side=LEFT, fill=BOTH, expand=True, padx=(0, 10))
+        left.pack(side=LEFT, fill=BOTH, expand=True, padx=(0, 12))
         right = Frame(main)
         right.pack(side=RIGHT, fill=BOTH, expand=True)
+
         Label(left, text="Що сканувати:", font=("Segoe UI", 10, "bold")).pack(anchor="w")
-        self.doc_list = Listbox(left, height=12, font=("Segoe UI", 10))
-        self.doc_list.pack(fill=BOTH, expand=True, pady=(6, 0))
+        self.doc_list = Listbox(left, height=12, font=("Segoe UI", 10), activestyle="dotbox")
+        self.doc_list.pack(fill=BOTH, expand=True, pady=(8, 0))
         for item in self.doc_types:
             self.doc_list.insert(END, f"{item.get('code','000')} — {item.get('label','Документ')}")
         self.doc_list.bind("<<ListboxSelect>>", lambda _: self._on_doc_changed())
+
         if self.doc_types:
             idx = select_initial_doc_index(self.doc_types, self.config.get("ui_state", {}).get("last_doc_type", ""))
             self.doc_list.selection_set(idx)
             self._on_doc_changed()
+
         Label(right, text="Тег/підрозділ:", font=("Segoe UI", 10, "bold")).pack(anchor="w")
-        tags = self.tags
-        if len(tags) <= 1:
-            self.tag_var.set(tags[0] if tags else "")
-            Label(right, textvariable=self.tag_var, fg="#1f6d1f").pack(anchor="w", pady=(6, 10))
+        if len(self.tags) <= 1:
+            self.tag_var.set(self.tags[0] if self.tags else "")
+            Label(right, textvariable=self.tag_var, fg="#1f6d1f").pack(anchor="w", pady=(8, 12))
         else:
-            OptionMenu(right, self.tag_var, *tags, command=lambda _: self._on_tag_changed()).pack(fill="x", pady=(6, 10))
+            OptionMenu(right, self.tag_var, *self.tags, command=lambda _: self._on_tag_changed()).pack(fill="x", pady=(8, 12))
+
         Label(right, text="Назва файлу:", font=("Segoe UI", 10, "bold")).pack(anchor="w")
         self.name_entry = Entry(right, textvariable=self.custom_name_var)
-        self.name_entry.pack(fill="x", pady=(6, 2))
+        self.name_entry.pack(fill="x", pady=(8, 4))
         self.text_helper.bind(self.name_entry)
         self.custom_name_var.trace_add("write", lambda *_: self._refresh_preview())
-        Label(right, text="Прев'ю:").pack(anchor="w", pady=(8, 0))
-        Label(right, textvariable=self.preview_var, wraplength=310, justify=LEFT, fg="#0b5").pack(anchor="w")
+
+        Label(right, text="Прев'ю:", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(10, 0))
+        Label(
+            right,
+            textvariable=self.preview_var,
+            wraplength=340,
+            justify=LEFT,
+            fg="#0a5a9c",
+            anchor="w",
+        ).pack(anchor="w", pady=(6, 0))
+
         btns = Frame(right)
-        btns.pack(fill="x", pady=(14, 0))
-        Button(btns, text="Сканувати", command=self._scan, bg="#2f7", font=("Segoe UI", 12, "bold"), padx=18, pady=6).pack(side=LEFT)
+        btns.pack(fill="x", pady=(16, 0))
+        Button(btns, text="Сканувати", command=self._scan, bg="#2f7", font=("Segoe UI", 12, "bold"), padx=20, pady=7).pack(side=LEFT)
         Button(btns, text="Налаштування", command=self._settings).pack(side=LEFT, padx=8)
         Button(btns, text="Вихід", command=self.root.destroy).pack(side=RIGHT)
-        post_btns = Frame(right)
-        post_btns.pack(fill="x", pady=(8, 0))
-        self.open_folder_btn = Button(post_btns, text="Відкрити папку", state="disabled", command=self._open_last_folder)
-        self.open_folder_btn.pack(side=LEFT)
-        self.copy_path_btn = Button(post_btns, text="Копіювати шлях", state="disabled", command=self._copy_last_path)
-        self.copy_path_btn.pack(side=LEFT, padx=8)
+
         Label(self.root, textvariable=self.status_var, anchor="w", relief="sunken", padx=8).pack(fill="x", side="bottom")
         self.root.bind("<Return>", lambda _: self._scan())
         self.root.bind("<Escape>", lambda _: self.root.destroy())
         self.root.bind("<Control-l>", lambda _: self._clear_name())
         self.root.bind("<Control-L>", lambda _: self._clear_name())
-        self.root.bind("<Control-c>", lambda _: self._copy_filename())
-        self.root.bind("<Control-C>", lambda _: self._copy_filename())
 
     def _set_status(self, text: str) -> None:
         self.status_var.set(text)
@@ -519,34 +571,6 @@ class ScannerUI:
     def _clear_name(self) -> str:
         self.custom_name_var.set("")
         return "break"
-
-    def _copy_filename(self) -> str:
-        if not self.current_doc:
-            return "break"
-        tag = self.tag_var.get()
-        auto_name = build_filename(self.current_doc, self.ctx, tag)
-        name = sanitize_part(self.custom_name_var.get()) or auto_name
-        text = f"{name}.{self.config.get('output_extension', 'pdf')}"
-        self.root.clipboard_clear()
-        self.root.clipboard_append(text)
-        self._set_status("Назву файлу скопійовано")
-        return "break"
-
-    def _open_last_folder(self) -> None:
-        if not self.last_output_path:
-            return
-        folder = self.last_output_path.parent
-        if sys.platform.startswith("win"):
-            os.startfile(str(folder))
-        else:
-            messagebox.showinfo("Інфо", f"Відкрийте папку вручну:\n{folder}")
-
-    def _copy_last_path(self) -> None:
-        if not self.last_output_path:
-            return
-        self.root.clipboard_clear()
-        self.root.clipboard_append(str(self.last_output_path))
-        self._set_status("Шлях скопійовано")
 
     def _on_doc_changed(self) -> None:
         idxs = self.doc_list.curselection()
@@ -572,22 +596,28 @@ class ScannerUI:
             self._set_status("Помилка: оберіть тип документа")
             messagebox.showerror("Помилка", "Оберіть тип документа")
             return
+
         cmd = _normalize_scan_command(self.config.get("scan_command", "")).strip()
         if not cmd:
             self._set_status("Помилка: не налаштована команда сканування")
             messagebox.showerror("Помилка", "Не налаштована команда сканування")
             return
+
         tag = self.tag_var.get().strip()
-        validation_error = validate_scan_requirements(self.ctx, tag)
+        validation_error = validate_context_for_doc_type(self.ctx, tag, self.current_doc)
         if validation_error:
             self._set_status(f"Помилка: {validation_error}")
             messagebox.showerror("Помилка", validation_error)
             return
+
         auto_name = build_filename(self.current_doc, self.ctx, tag)
         name = sanitize_part(self.custom_name_var.get()) or auto_name
-        output_path = self.cwd / f"{name}.{self.config.get('output_extension', 'pdf')}"
-        temp_path = Path(__file__).resolve().parent / self.config.get("temp_dir", "tmp_scans") / "scan_tmp.pdf"
-        log_path = Path(__file__).resolve().parent / self.config.get("log_file", "scan_log.csv")
+        extension = self.config.get("output_extension", "pdf")
+        output_path = self.cwd / f"{name}.{extension}"
+
+        temp_path = get_temp_output_path(self.config.get("temp_dir", "tmp_scans"), extension)
+        log_path = _resolve_relative_to_launcher(self.config.get("log_file", "scan_log.csv"), "scan_log.csv")
+
         log_entry = {
             "timestamp": datetime.now().isoformat(timespec="seconds"),
             "status": "error",
@@ -595,7 +625,7 @@ class ScannerUI:
             "document_key": self.current_doc.get("key", ""),
             "document_label": self.current_doc.get("label", ""),
             "selected_tag": tag,
-            "generated_filename": f"{name}.{self.config.get('output_extension', 'pdf')}",
+            "generated_filename": f"{name}.{extension}",
             "temp_output_path": str(temp_path),
             "final_output_path": "",
             "duplicate_strategy": self.config.get("duplicate_strategy", "ask"),
@@ -614,7 +644,6 @@ class ScannerUI:
             return "cancel"
 
         try:
-            self._set_status("Сканування...")
             resolved_path, resolved_strategy = resolve_final_output_path(
                 output_path,
                 self.config.get("duplicate_strategy", "ask"),
@@ -622,33 +651,30 @@ class ScannerUI:
             )
             log_entry["duplicate_strategy"] = resolved_strategy
             if resolved_path is None:
+                cleanup_temp_file(temp_path)
                 log_entry["status"] = "cancelled"
                 log_entry["message"] = "Користувач скасував операцію через конфлікт дубліката"
                 append_scan_log(log_path, log_entry)
-                if temp_path.exists():
-                    temp_path.unlink()
-                self._set_status("Готово")
+                self._set_status("Скасовано")
                 return
+
             log_entry["final_output_path"] = str(resolved_path)
-            final_path = perform_scan_with_temp(
-                cmd_template=cmd,
-                temp_output_path=temp_path,
-                final_output_path=resolved_path,
-                status_callback=self._set_status,
-            )
+            self._set_status("Сканування...")
+            run_scan(cmd, temp_path)
+            validate_temp_scan_result(temp_path)
+            self._set_status("Перенесення файлу...")
+            final_path = move_temp_to_final(temp_path, resolved_path)
+
             log_entry["status"] = "success"
             log_entry["message"] = "Сканування завершено успішно"
             append_scan_log(log_path, log_entry)
-            self.last_output_path = final_path
-            self.open_folder_btn.config(state="normal")
-            self.copy_path_btn.config(state="normal")
             self._set_status("Готово")
             messagebox.showinfo("Готово", f"Файл створено:\n{final_path}")
         except ValueError as exc:
             log_entry["message"] = str(exc)
             append_scan_log(log_path, log_entry)
             self._set_status(f"Помилка: {exc}")
-            messagebox.showerror("Помилка", f"Некоректна команда сканування:\n{exc}")
+            messagebox.showerror("Помилка", str(exc))
         except FileNotFoundError as exc:
             log_entry["message"] = str(exc)
             append_scan_log(log_path, log_entry)
@@ -666,34 +692,34 @@ class ScannerUI:
             self._set_status(f"Помилка: {exc}")
             messagebox.showerror("Помилка", str(exc))
         finally:
-            if temp_path.exists():
-                try:
-                    temp_path.unlink()
-                except OSError:
-                    pass
+            cleanup_temp_file(temp_path)
 
     def _settings(self) -> None:
         wnd = Toplevel(self.root)
         wnd.title("Налаштування")
-        wnd.geometry("720x460")
+        wnd.geometry("760x500")
         Label(wnd, text="Команда сканування (використовуйте {output_path}):").pack(anchor="w", padx=10, pady=(10, 2))
         cmd_var = StringVar(wnd, self.config.get("scan_command", ""))
         cmd_entry = Entry(wnd, textvariable=cmd_var)
         cmd_entry.pack(fill="x", padx=10)
         self.text_helper.bind(cmd_entry)
+
         Label(wnd, text="Стратегія дублікатів:").pack(anchor="w", padx=10, pady=(10, 2))
         dup_var = StringVar(wnd, self.config.get("duplicate_strategy", "ask"))
         OptionMenu(wnd, dup_var, "ask", "overwrite", "increment").pack(fill="x", padx=10)
+
         Label(wnd, text="Тимчасова папка (відносно папки програми):").pack(anchor="w", padx=10, pady=(10, 2))
         temp_var = StringVar(wnd, self.config.get("temp_dir", "tmp_scans"))
         temp_entry = Entry(wnd, textvariable=temp_var)
         temp_entry.pack(fill="x", padx=10)
         self.text_helper.bind(temp_entry)
+
         Label(wnd, text="Файл логу (відносно папки програми):").pack(anchor="w", padx=10, pady=(10, 2))
         log_var = StringVar(wnd, self.config.get("log_file", "scan_log.csv"))
         log_entry = Entry(wnd, textvariable=log_var)
         log_entry.pack(fill="x", padx=10)
         self.text_helper.bind(log_entry)
+
         Label(wnd, text="JSON для типів документів:").pack(anchor="w", padx=10, pady=(10, 2))
         txt = ScrolledText(wnd, height=14, wrap="word")
         txt.pack(fill=BOTH, expand=True, padx=10)
@@ -704,6 +730,11 @@ class ScannerUI:
             try:
                 raw_docs = txt.get("1.0", END).rstrip("\n")
                 docs = json.loads(raw_docs)
+                ok, validation_message = validate_doc_types(docs)
+                if not ok:
+                    messagebox.showerror("Помилка", validation_message)
+                    return
+
                 self.config["doc_types"] = docs
                 self.config["scan_command"] = _normalize_scan_command(cmd_var.get().strip())
                 self.config["duplicate_strategy"] = dup_var.get().strip() or "ask"
@@ -729,7 +760,7 @@ def main() -> int:
     raw_cwd = sys.argv[1] if len(sys.argv) > 1 else str(Path.cwd())
     cwd = Path(_clean_target_dir(raw_cwd)).resolve()
     cfg = load_config()
-    cleanup_temp_files(Path(__file__).resolve().parent / cfg.get("temp_dir", "tmp_scans"))
+    cleanup_temp_files(_resolve_relative_to_launcher(cfg.get("temp_dir", "tmp_scans"), "tmp_scans"))
     ui = ScannerUI(cwd)
     ui.run()
     return 0
