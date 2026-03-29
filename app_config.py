@@ -17,17 +17,18 @@ class ConfigValidationError(ValueError):
 
 @dataclass
 class ScanConfig:
-    command_template: str = (
-        'C:\\PROGRA~1\\NAPS2\\NAPS2.Console.exe --noprofile --driver {driver} '
-        '--device "{device}" --pagesize {page_size} --dpi {dpi} --bitdepth {bitdepth} '
-        '-o "{output_path}" --force'
-    )
+    mode: str = "profile"
+    naps2_exe: str = "C:\\PROGRA~1\\NAPS2\\NAPS2.Console.exe"
+    profile_name: str = "DR"
+    command_template: str = ""
     driver: str = "twain"
     device: str = "Pantum"
     dpi: int = 300
     page_size: str = "a4"
     bitdepth: str = "gray"
     output_extension: str = "pdf"
+    multi_page: bool = True
+    force_overwrite_flag: bool = True
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ScanConfig":
@@ -181,12 +182,17 @@ def migrate_legacy_config(data: dict[str, Any]) -> dict[str, Any]:
         migrated = dict(data)
         if "command_template" in migrated.get("scan", {}):
             migrated["scan"]["command_template"] = _clean_scan_command(migrated["scan"].get("command_template", ""))
+        if "scan_command" in migrated:
+            migrated.setdefault("scan", {})
+            migrated["scan"]["command_template"] = _clean_scan_command(migrated.get("scan_command", ""))
+            migrated["scan"].setdefault("mode", "manual")
         return migrated
 
     scan_command = _clean_scan_command(data.get("scan_command", ""))
     result = default_config_dict()
     if scan_command:
         result["scan"]["command_template"] = scan_command
+        result["scan"]["mode"] = "manual"
     result["scan"]["output_extension"] = data.get("output_extension", result["scan"]["output_extension"])
     result["behavior"]["duplicate_strategy"] = data.get("duplicate_strategy", result["behavior"]["duplicate_strategy"])
     result["paths"]["temp_dir"] = data.get("temp_dir", result["paths"]["temp_dir"])
@@ -213,13 +219,27 @@ def validate_doc_types(doc_types: list[DocTypeConfig]) -> None:
 
 
 def validate_config(cfg: AppConfig) -> None:
+    if cfg.scan.mode not in {"profile", "manual"}:
+        raise ConfigValidationError("SCAN: mode має бути profile/manual")
+    if not cfg.scan.naps2_exe.strip():
+        raise ConfigValidationError("SCAN: naps2_exe не може бути порожнім")
     if cfg.scan.dpi <= 0:
         raise ConfigValidationError("SCAN: dpi має бути > 0")
-    if cfg.scan.driver not in {"twain", "wia", "sane"}:
-        raise ConfigValidationError("SCAN: driver має бути одним з twain/wia/sane")
     if not cfg.scan.output_extension.strip():
         raise ConfigValidationError("SCAN: output_extension не може бути порожнім")
-    if "{output_path}" not in cfg.scan.command_template:
+    if cfg.scan.mode == "profile":
+        if not cfg.scan.profile_name.strip():
+            raise ConfigValidationError("SCAN: profile_name не може бути порожнім у profile mode")
+    if cfg.scan.mode == "manual":
+        if not cfg.scan.driver.strip():
+            raise ConfigValidationError("SCAN: driver не може бути порожнім у manual mode")
+        if not cfg.scan.device.strip():
+            raise ConfigValidationError("SCAN: device не може бути порожнім у manual mode")
+        if not cfg.scan.page_size.strip():
+            raise ConfigValidationError("SCAN: page_size не може бути порожнім у manual mode")
+        if not cfg.scan.bitdepth.strip():
+            raise ConfigValidationError("SCAN: bitdepth не може бути порожнім у manual mode")
+    if cfg.scan.command_template and "{output_path}" not in cfg.scan.command_template:
         raise ConfigValidationError("SCAN: command_template має містити {output_path}")
 
     if not cfg.paths.temp_dir.strip():
