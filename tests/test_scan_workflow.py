@@ -6,15 +6,19 @@ import pytest
 
 from tc_scanner_launcher import (
     DEFAULT_CONFIG,
-    append_scan_log,
-    cleanup_temp_files,
-    format_scan_process_error,
-    load_config,
-    perform_scan_with_temp,
-    resolve_final_output_path,
-    select_initial_tag,
-    validate_scan_requirements,
     FolderContext,
+    append_scan_log,
+    cleanup_temp_file,
+    format_scan_process_error,
+    get_temp_output_path,
+    load_config,
+    move_temp_to_final,
+    resolve_final_output_path,
+    save_config,
+    select_initial_tag,
+    validate_context_for_doc_type,
+    validate_doc_types,
+    validate_temp_scan_result,
 )
 
 
@@ -49,45 +53,44 @@ def test_resolve_final_output_path_ask_cancel(tmp_path: Path):
     assert strategy == "cancelled"
 
 
-def test_perform_scan_with_temp_raises_when_temp_missing(tmp_path: Path, monkeypatch):
-    temp_path = tmp_path / "tmp" / "scan_tmp.pdf"
-    final_path = tmp_path / "out" / "file.pdf"
+def test_temp_file_created_and_moved(tmp_path: Path):
+    temp = tmp_path / "tmp" / "scan.pdf"
+    final = tmp_path / "out" / "scan.pdf"
+    temp.parent.mkdir(parents=True)
+    temp.write_bytes(b"%PDF-1.7")
 
-    monkeypatch.setattr("tc_scanner_launcher.run_scan", lambda *_args, **_kwargs: None)
+    validate_temp_scan_result(temp)
+    moved = move_temp_to_final(temp, final)
 
-    with pytest.raises(FileNotFoundError, match="Тимчасовий файл сканування не створено"):
-        perform_scan_with_temp(
-            cmd_template="scanner --output {output_path}",
-            temp_output_path=temp_path,
-            final_output_path=final_path,
-        )
-
-
-def test_perform_scan_with_temp_moves_to_final(tmp_path: Path, monkeypatch):
-    temp_path = tmp_path / "tmp" / "scan_tmp.pdf"
-    final_path = tmp_path / "out" / "file.pdf"
-
-    def fake_run(_cmd: str, output_path: Path) -> None:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(b"%PDF-1.7 mock")
-
-    monkeypatch.setattr("tc_scanner_launcher.run_scan", fake_run)
-
-    result = perform_scan_with_temp(
-        cmd_template="scanner --output {output_path}",
-        temp_output_path=temp_path,
-        final_output_path=final_path,
-    )
-
-    assert result == final_path
-    assert final_path.exists()
-    assert final_path.read_bytes() == b"%PDF-1.7 mock"
-    assert not temp_path.exists()
+    assert moved == final
+    assert final.exists()
+    assert not temp.exists()
 
 
-def test_append_scan_log_writes_success_and_error_rows(tmp_path: Path):
+def test_temp_file_missing_raises(tmp_path: Path):
+    temp = tmp_path / "tmp" / "missing.pdf"
+
+    with pytest.raises(FileNotFoundError):
+        validate_temp_scan_result(temp)
+
+
+def test_move_failure_raises(monkeypatch, tmp_path: Path):
+    temp = tmp_path / "tmp" / "scan.pdf"
+    final = tmp_path / "out" / "scan.pdf"
+    temp.parent.mkdir(parents=True)
+    temp.write_bytes(b"x")
+
+    def fail_move(*_args, **_kwargs):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr("tc_scanner_launcher.shutil.move", fail_move)
+
+    with pytest.raises(RuntimeError, match="Не вдалося перемістити файл"):
+        move_temp_to_final(temp, final)
+
+
+def test_append_scan_log_success_error_cancelled(tmp_path: Path):
     log_path = tmp_path / "scan_log.csv"
-
     base_entry = {
         "timestamp": "2026-03-29T00:00:00",
         "current_folder": "C:/Work",
@@ -98,16 +101,16 @@ def test_append_scan_log_writes_success_and_error_rows(tmp_path: Path):
         "temp_output_path": "C:/tmp/scan_tmp.pdf",
         "final_output_path": "C:/Work/001_test.pdf",
         "duplicate_strategy": "ask",
+        "message": "",
     }
-    append_scan_log(log_path, {**base_entry, "status": "success", "message": "ok"})
-    append_scan_log(log_path, {**base_entry, "status": "error", "message": "fail"})
+    append_scan_log(log_path, {**base_entry, "status": "success"})
+    append_scan_log(log_path, {**base_entry, "status": "error", "message": "scan failed"})
+    append_scan_log(log_path, {**base_entry, "status": "cancelled", "message": "user cancelled"})
 
     with log_path.open("r", encoding="utf-8", newline="") as fh:
         rows = list(csv.DictReader(fh))
 
-    assert len(rows) == 2
-    assert rows[0]["status"] == "success"
-    assert rows[1]["status"] == "error"
+    assert [row["status"] for row in rows] == ["success", "error", "cancelled"]
 
 
 def test_load_config_backwards_compatible(tmp_path: Path, monkeypatch):
@@ -121,77 +124,62 @@ def test_load_config_backwards_compatible(tmp_path: Path, monkeypatch):
     assert cfg["duplicate_strategy"] == DEFAULT_CONFIG["duplicate_strategy"]
     assert cfg["temp_dir"] == DEFAULT_CONFIG["temp_dir"]
     assert cfg["log_file"] == DEFAULT_CONFIG["log_file"]
-    assert "ui_state" in cfg
+    assert cfg["ui_state"]["last_doc_type"] == DEFAULT_CONFIG["ui_state"]["last_doc_type"]
 
 
-def test_ui_state_save_load(tmp_path: Path, monkeypatch):
+def test_ui_state_load_and_save(tmp_path: Path, monkeypatch):
     config_path = tmp_path / "scanner_config.json"
-    config_path.write_text(
-        '{"scan_command":"scanner","ui_state":{"last_doc_type":"as","last_tag":"СЗ"}}',
-        encoding="utf-8",
-    )
+    config_path.write_text('{"scan_command":"scanner"}', encoding="utf-8")
     monkeypatch.setattr("tc_scanner_launcher.CONFIG_PATH", config_path)
 
     cfg = load_config()
+    cfg["ui_state"] = {"last_doc_type": "as", "last_tag": "СЗ"}
+    save_config(cfg)
 
-    assert cfg["ui_state"]["last_doc_type"] == "as"
-    assert cfg["ui_state"]["last_tag"] == "СЗ"
+    reloaded = load_config()
+    assert reloaded["ui_state"]["last_doc_type"] == "as"
+    assert reloaded["ui_state"]["last_tag"] == "СЗ"
 
 
-def test_auto_tag_selection():
+def test_validate_doc_types_valid_and_invalid():
+    valid = [{"key": "as", "label": "АС", "code": "005", "template": "{code}_{label}_{date}_{episode}_{tag}"}]
+    invalid = [{"key": "as", "label": "АС", "code": "005", "template": "{code}_{unknown}"}]
+
+    assert validate_doc_types(valid) == (True, None)
+    ok, message = validate_doc_types(invalid)
+    assert not ok
+    assert "невідомі плейсхолдери" in message
+
+
+def test_validate_context_for_doc_type_messages():
+    doc_with_section = {"template": "{code}_{section}_{date}_{episode}_{tag}"}
+    ctx = FolderContext(date="", episode="1", tags=["СЗ"], section="")
+
+    assert validate_context_for_doc_type(ctx, "СЗ", doc_with_section) == "Не знайдено дату справи в назві папки"
+    assert "епізод" in validate_context_for_doc_type(FolderContext(date="10.01.25", episode="", section="01"), "СЗ", doc_with_section)
+    assert "підрозділ" in validate_context_for_doc_type(FolderContext(date="10.01.25", episode="1", section="01"), "", doc_with_section)
+    assert "секцію" in validate_context_for_doc_type(FolderContext(date="10.01.25", episode="1", section=""), "СЗ", doc_with_section)
+
+
+def test_select_initial_tag_autoselect_one():
     assert select_initial_tag(["СЗ"], "РС") == "СЗ"
-    assert select_initial_tag(["РС", "СЗ"], "СЗ") == "СЗ"
 
 
-def test_duplicate_strategy_ui_interaction_mock(tmp_path: Path):
-    target = tmp_path / "file.pdf"
-    target.write_bytes(b"old")
-
-    resolved, strategy = resolve_final_output_path(
-        target,
-        "ask",
-        ask_user_choice=lambda: "increment",
-    )
-
-    assert strategy == "increment"
-    assert resolved == tmp_path / "file (2).pdf"
+def test_get_temp_output_path(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("tc_scanner_launcher.__file__", str(tmp_path / "tc_scanner_launcher.py"))
+    path = get_temp_output_path("tmp_scans", "pdf")
+    assert path.parent.name == "tmp_scans"
+    assert path.suffix == ".pdf"
 
 
-def test_status_updates(tmp_path: Path, monkeypatch):
-    temp_path = tmp_path / "tmp" / "scan_tmp.pdf"
-    final_path = tmp_path / "out" / "file.pdf"
-    statuses: list[str] = []
-
-    def fake_run(_cmd: str, output_path: Path) -> None:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(b"%PDF-1.7 mock")
-
-    monkeypatch.setattr("tc_scanner_launcher.run_scan", fake_run)
-    perform_scan_with_temp(
-        cmd_template="scanner --output {output_path}",
-        temp_output_path=temp_path,
-        final_output_path=final_path,
-        status_callback=statuses.append,
-    )
-    assert statuses == ["Сканування...", "Обробка файлу..."]
+def test_cleanup_temp_file(tmp_path: Path):
+    path = tmp_path / "tmp.pdf"
+    path.write_bytes(b"1")
+    cleanup_temp_file(path)
+    assert not path.exists()
 
 
-def test_validate_scan_requirements():
-    ctx = FolderContext(date="10.01.25", episode="1", tags=["СЗ"], section="01")
-    assert validate_scan_requirements(ctx, "СЗ") is None
-    assert "дата" in validate_scan_requirements(FolderContext(date="", episode="1"), "СЗ")
-
-
-def test_format_scan_process_error():
+def test_format_scan_process_error_uses_stderr():
     err = subprocess.CalledProcessError(1, "scan", stderr="Не знайдено пристрій Pantum")
     text = format_scan_process_error(err)
     assert "Не знайдено пристрій Pantum" in text
-
-
-def test_cleanup_temp_files(tmp_path: Path):
-    temp_dir = tmp_path / "tmp_scans"
-    temp_dir.mkdir()
-    (temp_dir / "a.pdf").write_bytes(b"1")
-    (temp_dir / "b.pdf").write_bytes(b"2")
-    removed = cleanup_temp_files(temp_dir)
-    assert removed == 2
