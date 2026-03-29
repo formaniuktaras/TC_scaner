@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import csv
+import logging
 import os
 import re
 import shlex
@@ -70,7 +71,7 @@ DEFAULT_CONFIG = {
     ],
 }
 
-TOP_FOLDER_RE = re.compile(r"^(?P<id>\d+?)_(?P<date>\d{2}\.\d{2}\.\d{2})_(?P<episode>\d+?)_(?P<rest>.+)$")
+DATE_RE = re.compile(r"^\d{2}\.\d{2}\.\d{2}$")
 SECTION_RE = re.compile(r"^(?P<section>\d{2})[_\s].+$")
 LOG_FIELDS = [
     "timestamp",
@@ -141,15 +142,25 @@ def parse_context(folder: Path) -> FolderContext:
     section = ""
 
     for part in [folder] + list(folder.parents):
-        top_match = TOP_FOLDER_RE.match(part.name)
-        if top_match:
-            date = top_match.group("date")
-            episode = top_match.group("episode")
-            suffix = top_match.group("rest")
-            if "_" in suffix:
-                tags_part = suffix.split("_", maxsplit=2)[-1]
-                tags = [sanitize_part(x) for x in tags_part.split("+") if x.strip()]
-            break
+        parts = part.name.split("_")
+        if len(parts) < 3:
+            continue
+
+        date = parts[1].strip()
+        episode = parts[2].strip()
+
+        if not DATE_RE.match(date):
+            logging.warning("parse_warning: invalid date format in folder '%s': '%s'", part.name, date)
+
+        last_part = parts[-1]
+        if "+" in last_part:
+            tags = [sanitize_part(x) for x in last_part.split("+") if x.strip()]
+        else:
+            tags = []
+        break
+
+    if not date or not episode:
+        logging.warning("parse_warning: context not detected for folder '%s'", folder)
 
     for part in [folder] + list(folder.parents):
         section_match = SECTION_RE.match(part.name)
