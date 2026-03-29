@@ -1,12 +1,44 @@
 {
-  "scan_command": "C:\\PROGRA~1\\NAPS2\\NAPS2.Console.exe --noprofile --driver twain --device \"Pantum\" --pagesize a4 --dpi 300 --bitdepth gray -o \"{output_path}\" --force",
-  "output_extension": "pdf",
-  "duplicate_strategy": "ask",
-  "temp_dir": "tmp_scans",
-  "log_file": "scan_log.csv",
+  "scan": {
+    "command_template": "C:\\PROGRA~1\\NAPS2\\NAPS2.Console.exe --noprofile --driver {driver} --device \"{device}\" --pagesize {page_size} --dpi {dpi} --bitdepth {bitdepth} -o \"{output_path}\" --force",
+    "driver": "twain",
+    "device": "Pantum",
+    "dpi": 300,
+    "page_size": "a4",
+    "bitdepth": "gray",
+    "output_extension": "pdf"
+  },
+  "paths": {
+    "temp_dir": "tmp_scans",
+    "log_file": "scan_log.csv",
+    "force_temp_for_network": true,
+    "network_prefixes": [
+      "G:\\"
+    ]
+  },
+  "behavior": {
+    "duplicate_strategy": "ask",
+    "allow_incomplete_context": true,
+    "status_warnings_only": true,
+    "log_parse_warnings": true
+  },
+  "naming": {
+    "fallback_if_empty": true,
+    "replace_spaces": "_",
+    "max_length": 180,
+    "trim_extra_separators": true,
+    "minimal_template": "{code}_{label}"
+  },
+  "ui": {
+    "remember_last_doc_type": true,
+    "remember_last_tag": true,
+    "focus_name_on_start": true,
+    "show_status_bar": true,
+    "mode": "simple"
+  },
   "ui_state": {
     "last_doc_type": "as",
-    "last_tag": "СЗ"
+    "last_tag": ""
   },
   "doc_types": [
     {
