@@ -22,6 +22,9 @@
   - гарячі клавіші `Ctrl+A`, `Ctrl+C`, `Ctrl+X`, `Ctrl+V`, `Shift+Insert`, `Ctrl+Insert`,
   - багаторядкове поле для JSON у вікні налаштувань з форматованим відображенням.
 - Запуск сканування без `shell=True` (без зайвого `cmd.exe` із боку нашого виклику).
+- Надійний workflow сканування: **scan → temp PDF → перевірка → move у фінальну папку**.
+- Стратегія для дублікатів файлів: `ask` / `overwrite` / `increment`.
+- Журнал сканувань `scan_log.csv` (успіх, помилки, скасування).
 
 ## Приклад вашого кейсу
 
@@ -86,6 +89,39 @@ python "C:\TC_scaner\tc_scanner_launcher.py" "C:\TC_scaner"
 - `{episode}`
 - `{section}`
 - `{tag}`
+
+## Нові параметри конфіга
+
+Окрім `scan_command`, `output_extension` і `doc_types`, тепер підтримуються:
+
+- `duplicate_strategy`:
+  - `ask` — при конфлікті імені показати діалог (`Так`=перезапис, `Ні`=копія з номером, `Скасувати`=відміна),
+  - `overwrite` — перезаписувати без запиту,
+  - `increment` — створювати `file (2).pdf`, `file (3).pdf`, ...
+- `temp_dir` — відносний шлях до папки тимчасового PDF (за замовчуванням `tmp_scans`).
+- `log_file` — відносний шлях до CSV-журналу (за замовчуванням `scan_log.csv`).
+
+Приклад:
+
+```json
+{
+  "scan_command": "C:\\PROGRA~1\\NAPS2\\NAPS2.Console.exe ... -o \"{output_path}\" --force",
+  "output_extension": "pdf",
+  "duplicate_strategy": "ask",
+  "temp_dir": "tmp_scans",
+  "log_file": "scan_log.csv",
+  "doc_types": []
+}
+```
+
+## Як тепер працює сканування
+
+1. GUI формує фінальну назву файлу (як і раніше).
+2. Сканер завжди пише в стабільний тимчасовий файл (у `temp_dir/scan_tmp.pdf`).
+3. Після завершення перевіряється, що temp-файл існує і не порожній.
+4. Застосовується `duplicate_strategy` для фінального шляху.
+5. Файл переноситься у фінальну папку.
+6. У `scan_log.csv` додається рядок (`success` / `error` / `cancelled`).
 
 ## Тести
 

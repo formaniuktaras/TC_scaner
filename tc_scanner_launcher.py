@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import json
+import csv
 import re
 import shlex
+import shutil
 import subprocess
 import sys
+from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from tkinter import (
@@ -28,7 +31,7 @@ from tkinter import (
     messagebox,
 )
 from tkinter.scrolledtext import ScrolledText
-from typing import Dict, List
+from typing import Callable, Dict, List
 
 CONFIG_PATH = Path(__file__).with_name("scanner_config.json")
 
@@ -47,6 +50,9 @@ class FolderContext:
 DEFAULT_CONFIG = {
     "scan_command": "",
     "output_extension": "pdf",
+    "duplicate_strategy": "ask",
+    "temp_dir": "tmp_scans",
+    "log_file": "scan_log.csv",
     "doc_types": [
         {"key": "vvzv", "label": "ВВЗВ", "code": "001", "template": "{code}_{label}_{date}_{episode}_{tag}"},
         {"key": "vvm", "label": "ВВМ", "code": "002", "template": "{code}_{label}_{date}_{episode}_{tag}"},
@@ -61,6 +67,19 @@ DEFAULT_CONFIG = {
 
 TOP_FOLDER_RE = re.compile(r"^(?P<id>\d+?)_(?P<date>\d{2}\.\d{2}\.\d{2})_(?P<episode>\d+?)_(?P<rest>.+)$")
 SECTION_RE = re.compile(r"^(?P<section>\d{2})[_\s].+$")
+LOG_FIELDS = [
+    "timestamp",
+    "status",
+    "current_folder",
+    "document_key",
+    "document_label",
+    "selected_tag",
+    "generated_filename",
+    "temp_output_path",
+    "final_output_path",
+    "duplicate_strategy",
+    "message",
+]
 
 
 def _normalize_scan_command(value: str) -> str:
@@ -83,9 +102,12 @@ def _clean_target_dir(value: str) -> str:
 def load_config() -> dict:
     if not CONFIG_PATH.exists():
         save_config(DEFAULT_CONFIG)
-        return DEFAULT_CONFIG
+        return dict(DEFAULT_CONFIG)
     with CONFIG_PATH.open("r", encoding="utf-8") as fh:
         cfg = json.load(fh)
+    merged = dict(DEFAULT_CONFIG)
+    merged.update(cfg)
+    cfg = merged
     cfg["scan_command"] = _normalize_scan_command(cfg.get("scan_command", ""))
     return cfg
 
@@ -144,7 +166,16 @@ def build_filename(doc_type: dict, ctx: FolderContext, tag: str) -> str:
 
 
 def _build_scan_args(cmd_template: str, output_path: Path) -> str | list[str]:
-    cmd = _normalize_scan_command(cmd_template).format(output_path=str(output_path))
+    normalized_cmd = _normalize_scan_command(cmd_template)
+    output_placeholder = "{output_path}"
+    output_value = str(output_path)
+    if sys.platform.startswith("win"):
+        if f'"{output_placeholder}"' in normalized_cmd or f"'{output_placeholder}'" in normalized_cmd:
+            cmd = normalized_cmd.format(output_path=output_value)
+        else:
+            cmd = normalized_cmd.replace(output_placeholder, f'"{output_value}"')
+    else:
+        cmd = normalized_cmd.format(output_path=output_value)
     if sys.platform.startswith("win"):
         return cmd
     return shlex.split(cmd, posix=True)
@@ -158,6 +189,78 @@ def run_scan(cmd_template: str, output_path: Path) -> None:
     if sys.platform.startswith("win"):
         kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
     subprocess.run(args, **kwargs)
+
+
+def pick_increment_path(target_path: Path) -> Path:
+    if not target_path.exists():
+        return target_path
+    stem = target_path.stem
+    suffix = target_path.suffix
+    parent = target_path.parent
+    idx = 2
+    while True:
+        candidate = parent / f"{stem} ({idx}){suffix}"
+        if not candidate.exists():
+            return candidate
+        idx += 1
+
+
+def resolve_final_output_path(
+    target_path: Path,
+    duplicate_strategy: str,
+    ask_user_choice: Callable[[], str] | None = None,
+) -> tuple[Path | None, str]:
+    strategy = (duplicate_strategy or "ask").lower()
+    if strategy not in {"ask", "overwrite", "increment"}:
+        strategy = "ask"
+    if not target_path.exists():
+        return target_path, strategy
+    if strategy == "overwrite":
+        return target_path, strategy
+    if strategy == "increment":
+        return pick_increment_path(target_path), strategy
+    chooser = ask_user_choice or (lambda: "cancel")
+    user_choice = chooser()
+    if user_choice == "overwrite":
+        return target_path, "overwrite"
+    if user_choice == "increment":
+        return pick_increment_path(target_path), "increment"
+    return None, "cancelled"
+
+
+def append_scan_log(log_path: Path, entry: dict) -> None:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    file_exists = log_path.exists()
+    with log_path.open("a", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=LOG_FIELDS)
+        if not file_exists:
+            writer.writeheader()
+        row = {field: entry.get(field, "") for field in LOG_FIELDS}
+        writer.writerow(row)
+
+
+def perform_scan_with_temp(
+    *,
+    cmd_template: str,
+    temp_output_path: Path,
+    final_output_path: Path,
+) -> Path:
+    temp_output_path.parent.mkdir(parents=True, exist_ok=True)
+    if temp_output_path.exists():
+        temp_output_path.unlink()
+    run_scan(cmd_template, temp_output_path)
+    if not temp_output_path.exists():
+        raise FileNotFoundError(f"Тимчасовий файл сканування не створено: {temp_output_path}")
+    if temp_output_path.stat().st_size == 0:
+        raise ValueError(f"Тимчасовий файл сканування порожній: {temp_output_path}")
+    final_output_path.parent.mkdir(parents=True, exist_ok=True)
+    if final_output_path.exists():
+        final_output_path.unlink()
+    try:
+        shutil.move(str(temp_output_path), str(final_output_path))
+    except Exception as exc:
+        raise RuntimeError(f"Не вдалося перемістити файл у цільову папку: {exc}") from exc
+    return final_output_path
 
 
 class TextEditHelper:
@@ -338,15 +441,79 @@ class ScannerUI:
         auto_name = build_filename(self.current_doc, self.ctx, tag)
         name = sanitize_part(self.custom_name_var.get()) or auto_name
         output_path = self.cwd / f"{name}.{self.config.get('output_extension', 'pdf')}"
+        temp_path = Path(__file__).resolve().parent / self.config.get("temp_dir", "tmp_scans") / "scan_tmp.pdf"
+        log_path = Path(__file__).resolve().parent / self.config.get("log_file", "scan_log.csv")
+        log_entry = {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "status": "error",
+            "current_folder": str(self.cwd),
+            "document_key": self.current_doc.get("key", ""),
+            "document_label": self.current_doc.get("label", ""),
+            "selected_tag": tag,
+            "generated_filename": f"{name}.{self.config.get('output_extension', 'pdf')}",
+            "temp_output_path": str(temp_path),
+            "final_output_path": "",
+            "duplicate_strategy": self.config.get("duplicate_strategy", "ask"),
+            "message": "",
+        }
+
+        def _ask_duplicate_choice() -> str:
+            res = messagebox.askyesnocancel(
+                "Файл вже існує",
+                "Файл вже існує.\nТак — перезаписати\nНі — створити копію з номером\nСкасувати — відмінити сканування",
+            )
+            if res is True:
+                return "overwrite"
+            if res is False:
+                return "increment"
+            return "cancel"
+
         try:
-            run_scan(cmd, output_path)
-            messagebox.showinfo("Готово", f"Файл створено:\n{output_path}")
+            resolved_path, resolved_strategy = resolve_final_output_path(
+                output_path,
+                self.config.get("duplicate_strategy", "ask"),
+                ask_user_choice=_ask_duplicate_choice,
+            )
+            log_entry["duplicate_strategy"] = resolved_strategy
+            if resolved_path is None:
+                log_entry["status"] = "cancelled"
+                log_entry["message"] = "Користувач скасував операцію через конфлікт дубліката"
+                append_scan_log(log_path, log_entry)
+                if temp_path.exists():
+                    temp_path.unlink()
+                return
+            log_entry["final_output_path"] = str(resolved_path)
+            final_path = perform_scan_with_temp(
+                cmd_template=cmd,
+                temp_output_path=temp_path,
+                final_output_path=resolved_path,
+            )
+            log_entry["status"] = "success"
+            log_entry["message"] = "Сканування завершено успішно"
+            append_scan_log(log_path, log_entry)
+            messagebox.showinfo("Готово", f"Файл створено:\n{final_path}")
         except ValueError as exc:
+            log_entry["message"] = str(exc)
+            append_scan_log(log_path, log_entry)
             messagebox.showerror("Помилка", f"Некоректна команда сканування:\n{exc}")
-        except FileNotFoundError:
-            messagebox.showerror("Помилка", "Не знайдено програму сканування. Перевірте scan_command у налаштуваннях.")
+        except FileNotFoundError as exc:
+            log_entry["message"] = str(exc)
+            append_scan_log(log_path, log_entry)
+            messagebox.showerror("Помилка", str(exc))
         except subprocess.CalledProcessError as exc:
+            log_entry["message"] = f"Зовнішня програма сканування завершилась з помилкою (код {exc.returncode})"
+            append_scan_log(log_path, log_entry)
             messagebox.showerror("Помилка", f"Зовнішня програма сканування завершилась з помилкою (код {exc.returncode}).")
+        except Exception as exc:
+            log_entry["message"] = str(exc)
+            append_scan_log(log_path, log_entry)
+            messagebox.showerror("Помилка", str(exc))
+        finally:
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
 
     def _settings(self) -> None:
         wnd = Toplevel(self.root)
@@ -357,6 +524,19 @@ class ScannerUI:
         cmd_entry = Entry(wnd, textvariable=cmd_var)
         cmd_entry.pack(fill="x", padx=10)
         self.text_helper.bind(cmd_entry)
+        Label(wnd, text="Стратегія дублікатів:").pack(anchor="w", padx=10, pady=(10, 2))
+        dup_var = StringVar(wnd, self.config.get("duplicate_strategy", "ask"))
+        OptionMenu(wnd, dup_var, "ask", "overwrite", "increment").pack(fill="x", padx=10)
+        Label(wnd, text="Тимчасова папка (відносно папки програми):").pack(anchor="w", padx=10, pady=(10, 2))
+        temp_var = StringVar(wnd, self.config.get("temp_dir", "tmp_scans"))
+        temp_entry = Entry(wnd, textvariable=temp_var)
+        temp_entry.pack(fill="x", padx=10)
+        self.text_helper.bind(temp_entry)
+        Label(wnd, text="Файл логу (відносно папки програми):").pack(anchor="w", padx=10, pady=(10, 2))
+        log_var = StringVar(wnd, self.config.get("log_file", "scan_log.csv"))
+        log_entry = Entry(wnd, textvariable=log_var)
+        log_entry.pack(fill="x", padx=10)
+        self.text_helper.bind(log_entry)
         Label(wnd, text="JSON для типів документів:").pack(anchor="w", padx=10, pady=(10, 2))
         txt = ScrolledText(wnd, height=14, wrap="word")
         txt.pack(fill=BOTH, expand=True, padx=10)
@@ -369,6 +549,9 @@ class ScannerUI:
                 docs = json.loads(raw_docs)
                 self.config["doc_types"] = docs
                 self.config["scan_command"] = _normalize_scan_command(cmd_var.get().strip())
+                self.config["duplicate_strategy"] = dup_var.get().strip() or "ask"
+                self.config["temp_dir"] = temp_var.get().strip() or "tmp_scans"
+                self.config["log_file"] = log_var.get().strip() or "scan_log.csv"
                 save_config(self.config)
             except json.JSONDecodeError as exc:
                 messagebox.showerror("Помилка JSON", f"Невалідний JSON у типах документів:\n{exc}")

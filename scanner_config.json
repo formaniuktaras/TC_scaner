@@ -1,6 +1,9 @@
 {
   "scan_command": "C:\\PROGRA~1\\NAPS2\\NAPS2.Console.exe --noprofile --driver twain --device \"Pantum\" --pagesize a4 --dpi 300 --bitdepth gray -o \"{output_path}\" --force",
   "output_extension": "pdf",
+  "duplicate_strategy": "ask",
+  "temp_dir": "tmp_scans",
+  "log_file": "scan_log.csv",
   "doc_types": [
     {
       "key": "vvzv",
