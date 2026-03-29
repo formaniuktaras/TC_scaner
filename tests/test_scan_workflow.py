@@ -9,6 +9,7 @@ from tc_scanner_launcher import (
     FolderContext,
     append_scan_log,
     cleanup_temp_file,
+    collect_parse_warnings,
     format_scan_process_error,
     get_temp_output_path,
     load_config,
@@ -16,7 +17,6 @@ from tc_scanner_launcher import (
     resolve_final_output_path,
     save_config,
     select_initial_tag,
-    validate_context_for_doc_type,
     validate_doc_types,
     validate_temp_scan_result,
 )
@@ -151,14 +151,19 @@ def test_validate_doc_types_valid_and_invalid():
     assert "невідомі плейсхолдери" in message
 
 
-def test_validate_context_for_doc_type_messages():
+def test_collect_parse_warnings():
     doc_with_section = {"template": "{code}_{section}_{date}_{episode}_{tag}"}
     ctx = FolderContext(date="", episode="1", tags=["СЗ"], section="")
 
-    assert validate_context_for_doc_type(ctx, "СЗ", doc_with_section) == "Не знайдено дату справи в назві папки"
-    assert "епізод" in validate_context_for_doc_type(FolderContext(date="10.01.25", episode="", section="01"), "СЗ", doc_with_section)
-    assert "підрозділ" in validate_context_for_doc_type(FolderContext(date="10.01.25", episode="1", section="01"), "", doc_with_section)
-    assert "секцію" in validate_context_for_doc_type(FolderContext(date="10.01.25", episode="1", section=""), "СЗ", doc_with_section)
+    warnings = collect_parse_warnings(ctx, "СЗ", doc_with_section)
+    assert "не знайдено дату" in warnings
+    assert "не знайдено секцію" in warnings
+
+    warnings = collect_parse_warnings(FolderContext(date="10.01.25", episode="", section="01"), "СЗ", doc_with_section)
+    assert "не знайдено епізод" in warnings
+
+    warnings = collect_parse_warnings(FolderContext(date="10.01.25", episode="1", section="01"), "", doc_with_section)
+    assert "не знайдено підрозділ" in warnings
 
 
 def test_select_initial_tag_autoselect_one():

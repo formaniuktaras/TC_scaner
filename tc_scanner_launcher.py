@@ -241,17 +241,17 @@ def select_initial_tag(tags: list[str], last_tag: str) -> str:
     return tags[0]
 
 
-def validate_context_for_doc_type(ctx: FolderContext, tag: str, doc_type: dict) -> str | None:
-    if not ctx.date:
-        return "Не знайдено дату справи в назві папки"
-    if not ctx.episode:
-        return "Не знайдено епізод у назві папки"
+def collect_parse_warnings(ctx: FolderContext, tag: str, doc_type: dict | None = None) -> list[str]:
+    warnings: list[str] = []
     if not tag:
-        return "Не знайдено підрозділ у суфіксі папки"
-    template = doc_type.get("template", "")
-    if "{section}" in template and not ctx.section:
-        return "Не знайдено секцію 01_..."
-    return None
+        warnings.append("не знайдено підрозділ")
+    if not ctx.date:
+        warnings.append("не знайдено дату")
+    if not ctx.episode:
+        warnings.append("не знайдено епізод")
+    if doc_type and "{section}" in doc_type.get("template", "") and not ctx.section:
+        warnings.append("не знайдено секцію")
+    return warnings
 
 
 def format_scan_process_error(exc: subprocess.CalledProcessError) -> str:
@@ -477,7 +477,9 @@ class ScannerUI:
         self.status_var = StringVar(self.root, "Готово")
         self._build()
         self.name_entry.focus_set()
-        if not self.ctx.date or not self.ctx.episode:
+        initial_tag = self.tag_var.get().strip()
+        parse_warnings = collect_parse_warnings(self.ctx, initial_tag)
+        if parse_warnings:
             log_path = _resolve_relative_to_launcher(self.config.get("log_file", ""), "scan_log.csv")
             append_scan_log(
                 log_path,
@@ -492,9 +494,10 @@ class ScannerUI:
                     "temp_output_path": "",
                     "final_output_path": "",
                     "duplicate_strategy": self.config.get("duplicate_strategy", "ask"),
-                    "message": "Контекст папки розпізнано частково",
+                    "message": f"Контекст папки розпізнано частково: {', '.join(parse_warnings)}",
                 },
             )
+            self._set_status("Попередження: структура папки неповна")
         self._refresh_preview()
 
     def _build(self) -> None:
@@ -604,11 +607,12 @@ class ScannerUI:
             return
 
         tag = self.tag_var.get().strip()
-        validation_error = validate_context_for_doc_type(self.ctx, tag, self.current_doc)
-        if validation_error:
-            self._set_status(f"Помилка: {validation_error}")
-            messagebox.showerror("Помилка", validation_error)
-            return
+        parse_warnings = collect_parse_warnings(self.ctx, tag, self.current_doc)
+        if parse_warnings:
+            warning_text = "Попередження: структура папки неповна"
+            if len(parse_warnings) == 1:
+                warning_text = f"Попередження: {parse_warnings[0]}"
+            self._set_status(warning_text)
 
         auto_name = build_filename(self.current_doc, self.ctx, tag)
         name = sanitize_part(self.custom_name_var.get()) or auto_name
@@ -659,10 +663,19 @@ class ScannerUI:
                 return
 
             log_entry["final_output_path"] = str(resolved_path)
+            if parse_warnings:
+                append_scan_log(
+                    log_path,
+                    {
+                        **log_entry,
+                        "status": "parse_warning",
+                        "message": f"Сканування з неповним контекстом: {', '.join(parse_warnings)}",
+                    },
+                )
             self._set_status("Сканування...")
             run_scan(cmd, temp_path)
             validate_temp_scan_result(temp_path)
-            self._set_status("Перенесення файлу...")
+            self._set_status("Обробка...")
             final_path = move_temp_to_final(temp_path, resolved_path)
 
             log_entry["status"] = "success"
