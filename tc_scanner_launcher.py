@@ -12,9 +12,7 @@ from pathlib import Path
 from tkinter import (
     BOTH,
     END,
-    INSERT,
     LEFT,
-    RIGHT,
     BooleanVar,
     Button,
     Checkbutton,
@@ -24,6 +22,9 @@ from tkinter import (
     Listbox,
     Menu,
     OptionMenu,
+    RAISED,
+    RIDGE,
+    SUNKEN,
     StringVar,
     Tk,
     Toplevel,
@@ -112,6 +113,17 @@ def select_initial_tag(tags: list[str], last_tag: str) -> str:
     return tags[0]
 
 
+def format_context_line(value: str) -> str:
+    return value if value else "—"
+
+
+def format_filename_preview(filename: str, extension: str) -> str:
+    clean = sanitize_part(filename)
+    if not clean:
+        clean = "—"
+    return f"Файл: {clean}.{extension}" if clean != "—" else "Файл: —"
+
+
 def collect_parse_warnings(ctx: FolderContext, tag: str, template: str | None = None) -> list[str]:
     warnings: list[str] = []
     if not tag:
@@ -165,56 +177,112 @@ class ScannerUI:
         self.tag_var.set(select_initial_tag(self.tags, self.app_config.ui_state.last_tag))
         self.preview_var = StringVar(self.root)
         self.custom_name_var = StringVar(self.root)
-        self.status_var = StringVar(self.root, "Готово")
+        self.status_var = StringVar(self.root, "Готово до сканування")
+        self._manual_name_edited = False
+        self._programmatic_name_update = False
+        self.service_buttons: list[Button] = []
         self._build()
+        self.root.bind("<Return>", self._on_enter_pressed)
+        self.root.bind("<Escape>", self._on_escape_pressed)
         if self.app_config.ui.focus_name_on_start:
             self.name_entry.focus_set()
-        self._refresh_preview()
+        else:
+            self.doc_list.focus_set()
+        self._refresh_filename()
 
     def _build(self) -> None:
         main = Frame(self.root)
         main.pack(fill=BOTH, expand=True, padx=16, pady=14)
+        main.columnconfigure(0, weight=1)
+        main.rowconfigure(0, weight=1)
 
-        left = Frame(main)
-        left.pack(side=LEFT, fill=BOTH, expand=True, padx=(0, 12))
-        right = Frame(main)
-        right.pack(side=RIGHT, fill=BOTH, expand=True)
+        self._build_doc_block(main)
+        self._build_context_block(main)
+        self._build_result_block(main)
+        self._build_action_block(main)
 
-        Label(left, text="Що сканувати:", font=("Segoe UI", 10, "bold")).pack(anchor="w")
-        self.doc_list = Listbox(left, height=12, font=("Segoe UI", 10), activestyle="dotbox")
-        self.doc_list.pack(fill=BOTH, expand=True, pady=(8, 0))
+        Label(self.root, textvariable=self.status_var, anchor="w", relief=SUNKEN, padx=8).pack(fill="x", side="bottom")
+
+    def _build_block_frame(self, parent: Frame, title: str, pady: tuple[int, int] = (0, 10)) -> Frame:
+        frame = Frame(parent, bd=1, relief=RIDGE, padx=10, pady=10)
+        frame.pack(fill="x", pady=pady)
+        Label(frame, text=title, font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(0, 8))
+        return frame
+
+    def _build_doc_block(self, parent: Frame) -> None:
+        block = self._build_block_frame(parent, "1. Що скануємо")
+        self.doc_list = Listbox(block, height=9, font=("Segoe UI", 10), activestyle="dotbox")
+        self.doc_list.pack(fill=BOTH, expand=True)
         for item in self.doc_types:
             self.doc_list.insert(END, f"{item.code} — {item.label}")
         self.doc_list.bind("<<ListboxSelect>>", lambda _: self._on_doc_changed())
-
         if self.doc_types:
             idx = select_initial_doc_index(self.doc_types, self.app_config.ui_state.last_doc_type)
             self.doc_list.selection_set(idx)
             self._on_doc_changed()
 
-        Label(right, text="Тег/підрозділ:", font=("Segoe UI", 10, "bold")).pack(anchor="w")
-        if len(self.tags) <= 1:
-            self.tag_var.set(self.tags[0] if self.tags else "")
-            Label(right, textvariable=self.tag_var, fg="#1f6d1f").pack(anchor="w", pady=(8, 12))
-        else:
-            OptionMenu(right, self.tag_var, *self.tags, command=lambda _: self._on_tag_changed()).pack(fill="x", pady=(8, 12))
+    def _build_context_block(self, parent: Frame) -> None:
+        block = self._build_block_frame(parent, "2. Контекст")
+        Label(block, text="Служба:", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        self.service_frame = Frame(block)
+        self.service_frame.pack(fill="x", pady=(6, 8))
+        self._render_service_buttons()
+        self.context_var = StringVar(self.root)
+        Label(block, textvariable=self.context_var, justify=LEFT, anchor="w").pack(anchor="w")
+        self._refresh_context_summary()
 
-        Label(right, text="Назва файлу:", font=("Segoe UI", 10, "bold")).pack(anchor="w")
-        self.name_entry = Entry(right, textvariable=self.custom_name_var)
-        self.name_entry.pack(fill="x", pady=(8, 4))
-        self.custom_name_var.trace_add("write", lambda *_: self._refresh_preview())
+    def _build_result_block(self, parent: Frame) -> None:
+        block = self._build_block_frame(parent, "3. Результат")
+        Label(block, text="Назва файлу:", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        self.name_entry = Entry(block, textvariable=self.custom_name_var)
+        self.name_entry.pack(fill="x", pady=(6, 6))
+        self.custom_name_var.trace_add("write", self._on_name_changed)
+        Label(block, textvariable=self.preview_var, justify=LEFT, anchor="w", fg="#0a5a9c").pack(anchor="w")
 
-        Label(right, text="Прев'ю:", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(10, 0))
-        Label(right, textvariable=self.preview_var, wraplength=340, justify=LEFT, fg="#0a5a9c", anchor="w").pack(anchor="w", pady=(6, 0))
-
-        btns = Frame(right)
-        btns.pack(fill="x", pady=(16, 0))
-        Button(btns, text="Сканувати", command=self._scan, bg="#2f7", font=("Segoe UI", 12, "bold"), padx=20, pady=7).pack(side=LEFT)
+    def _build_action_block(self, parent: Frame) -> None:
+        block = self._build_block_frame(parent, "4. Дія", pady=(0, 0))
+        btns = Frame(block)
+        btns.pack(fill="x")
+        Button(btns, text="Сканувати", command=self._scan, bg="#2f7", font=("Segoe UI", 13, "bold"), padx=26, pady=9).pack(side=LEFT)
         Button(btns, text="Налаштування", command=self._settings).pack(side=LEFT, padx=8)
-        Button(btns, text="Вихід", command=self.root.destroy).pack(side=RIGHT)
+        Button(btns, text="Вихід", command=self.root.destroy).pack(side=LEFT, padx=8)
 
-        if self.app_config.ui.show_status_bar:
-            Label(self.root, textvariable=self.status_var, anchor="w", relief="sunken", padx=8).pack(fill="x", side="bottom")
+    def _render_service_buttons(self) -> None:
+        for widget in self.service_frame.winfo_children():
+            widget.destroy()
+        self.service_buttons.clear()
+        if not self.tags:
+            Label(self.service_frame, text="Службу не визначено", fg="#666666").pack(anchor="w")
+            return
+        for service in self.tags:
+            btn = Button(
+                self.service_frame,
+                text=service,
+                command=lambda value=service: self._on_service_changed(value),
+                relief=RAISED,
+                padx=10,
+                pady=2,
+            )
+            btn.pack(side=LEFT, padx=(0, 6), pady=2)
+            self.service_buttons.append(btn)
+        self._refresh_service_buttons()
+
+    def _refresh_service_buttons(self) -> None:
+        active = self.tag_var.get().strip()
+        for button in self.service_buttons:
+            is_active = button["text"] == active
+            button.configure(relief=SUNKEN if is_active else RAISED, bg="#d9f3d9" if is_active else "#f0f0f0")
+
+    def _refresh_context_summary(self) -> None:
+        self.context_var.set(
+            "\n".join(
+                [
+                    f"Дата: {format_context_line(self.ctx.date)}",
+                    f"Епізод: {format_context_line(self.ctx.episode)}",
+                    f"Секція: {format_context_line(self.ctx.section)}",
+                ]
+            )
+        )
 
     def _set_status(self, text: str) -> None:
         self.status_var.set(text)
@@ -227,9 +295,11 @@ class ScannerUI:
             self.app_config.ui_state.last_tag = self.tag_var.get()
         save_config(self.app_config)
 
-    def _on_tag_changed(self) -> None:
+    def _on_service_changed(self, service: str) -> None:
+        self.tag_var.set(service)
+        self._refresh_service_buttons()
         self._save_ui_state()
-        self._refresh_preview()
+        self._refresh_filename()
 
     def _on_doc_changed(self) -> None:
         idxs = self.doc_list.curselection()
@@ -238,9 +308,21 @@ class ScannerUI:
             return
         self.current_doc = self.doc_types[idxs[0]]
         self._save_ui_state()
-        self._refresh_preview()
+        self._refresh_filename()
 
-    def _refresh_preview(self) -> None:
+    def _on_name_changed(self, *_args) -> None:
+        if not self._programmatic_name_update:
+            self._manual_name_edited = True
+        self._refresh_filename_preview()
+
+    def _set_generated_name(self, value: str) -> None:
+        self._programmatic_name_update = True
+        try:
+            self.custom_name_var.set(value)
+        finally:
+            self._programmatic_name_update = False
+
+    def _refresh_filename(self) -> None:
         if not self.current_doc:
             return
         tag = self.tag_var.get().strip()
@@ -256,9 +338,21 @@ class ScannerUI:
             values,
             self.app_config.naming,
         )
-        manual = sanitize_part(self.custom_name_var.get())
-        name = manual if manual else auto_name
-        self.preview_var.set(str(self.cwd / f"{name}.{self.app_config.scan.output_extension}"))
+        if not self._manual_name_edited or not sanitize_part(self.custom_name_var.get()):
+            self._set_generated_name(auto_name)
+            self._manual_name_edited = False
+        self._refresh_filename_preview()
+
+    def _refresh_filename_preview(self) -> None:
+        self.preview_var.set(format_filename_preview(self.custom_name_var.get(), self.app_config.scan.output_extension))
+
+    def _on_enter_pressed(self, _event) -> str:
+        self._scan()
+        return "break"
+
+    def _on_escape_pressed(self, _event) -> str:
+        self.root.destroy()
+        return "break"
 
     def _settings(self) -> None:
         wnd = Toplevel(self.root)
@@ -376,6 +470,8 @@ class ScannerUI:
         if parse_warnings and not self.app_config.behavior.allow_incomplete_context:
             messagebox.showerror("Помилка", f"Контекст папки неповний: {', '.join(parse_warnings)}")
             return
+        if parse_warnings:
+            self._set_status("Попередження: назва буде неповною")
 
         values = {"code": self.current_doc.code, "label": self.current_doc.label, "tag": tag, **self.ctx.as_dict()}
         auto_name = build_document_filename(self.current_doc.template, self.app_config.naming.minimal_template, values, self.app_config.naming)
@@ -424,10 +520,11 @@ class ScannerUI:
             target = temp_path if force_temp else resolved_path
             validate_temp_scan_result(target)
             if force_temp:
+                self._set_status("Перенесення файлу...")
                 move_temp_to_final(temp_path, resolved_path)
             log_entry["status"] = "success"
             append_scan_log(log_path, log_entry)
-            self._set_status("Готово")
+            self._set_status("Файл збережено")
         except subprocess.CalledProcessError as exc:
             log_entry["message"] = format_scan_process_error(exc)
             append_scan_log(log_path, log_entry)
