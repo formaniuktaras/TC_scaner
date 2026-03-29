@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import csv
+import os
 import re
 import shlex
 import shutil
@@ -53,6 +54,10 @@ DEFAULT_CONFIG = {
     "duplicate_strategy": "ask",
     "temp_dir": "tmp_scans",
     "log_file": "scan_log.csv",
+    "ui_state": {
+        "last_doc_type": "as",
+        "last_tag": "",
+    },
     "doc_types": [
         {"key": "vvzv", "label": "ВВЗВ", "code": "001", "template": "{code}_{label}_{date}_{episode}_{tag}"},
         {"key": "vvm", "label": "ВВМ", "code": "002", "template": "{code}_{label}_{date}_{episode}_{tag}"},
@@ -107,6 +112,9 @@ def load_config() -> dict:
         cfg = json.load(fh)
     merged = dict(DEFAULT_CONFIG)
     merged.update(cfg)
+    merged_ui_state = dict(DEFAULT_CONFIG.get("ui_state", {}))
+    merged_ui_state.update(cfg.get("ui_state", {}))
+    merged["ui_state"] = merged_ui_state
     cfg = merged
     cfg["scan_command"] = _normalize_scan_command(cfg.get("scan_command", ""))
     return cfg
@@ -185,10 +193,53 @@ def run_scan(cmd_template: str, output_path: Path) -> None:
     args = _build_scan_args(cmd_template, output_path)
     if not args:
         raise ValueError("Команда сканування порожня")
-    kwargs = {"check": True, "shell": False}
+    kwargs = {"check": True, "shell": False, "capture_output": True, "text": True}
     if sys.platform.startswith("win"):
         kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
     subprocess.run(args, **kwargs)
+
+
+def cleanup_temp_files(temp_dir: Path) -> int:
+    if not temp_dir.exists():
+        return 0
+    removed = 0
+    for item in temp_dir.iterdir():
+        if item.is_file():
+            item.unlink(missing_ok=True)
+            removed += 1
+    return removed
+
+
+def select_initial_doc_index(doc_types: list[dict], last_doc_type: str) -> int:
+    for idx, doc_type in enumerate(doc_types):
+        if doc_type.get("key", "") == last_doc_type:
+            return idx
+    return 0
+
+
+def select_initial_tag(tags: list[str], last_tag: str) -> str:
+    if not tags:
+        return ""
+    if last_tag and last_tag in tags:
+        return last_tag
+    return tags[0]
+
+
+def validate_scan_requirements(ctx: FolderContext, tag: str) -> str | None:
+    if not ctx.date:
+        return "Не знайдена дата в структурі папок"
+    if not ctx.episode:
+        return "Не знайдений епізод в структурі папок"
+    if not tag:
+        return "Не вибрано тег"
+    return None
+
+
+def format_scan_process_error(exc: subprocess.CalledProcessError) -> str:
+    details = (exc.stderr or exc.stdout or "").strip()
+    if details:
+        return f"Сканування завершилось з помилкою (код {exc.returncode}): {details}"
+    return f"Сканування завершилось з помилкою (код {exc.returncode})"
 
 
 def pick_increment_path(target_path: Path) -> Path:
@@ -244,15 +295,20 @@ def perform_scan_with_temp(
     cmd_template: str,
     temp_output_path: Path,
     final_output_path: Path,
+    status_callback: Callable[[str], None] | None = None,
 ) -> Path:
     temp_output_path.parent.mkdir(parents=True, exist_ok=True)
     if temp_output_path.exists():
         temp_output_path.unlink()
+    if status_callback:
+        status_callback("Сканування...")
     run_scan(cmd_template, temp_output_path)
     if not temp_output_path.exists():
         raise FileNotFoundError(f"Тимчасовий файл сканування не створено: {temp_output_path}")
     if temp_output_path.stat().st_size == 0:
         raise ValueError(f"Тимчасовий файл сканування порожній: {temp_output_path}")
+    if status_callback:
+        status_callback("Обробка файлу...")
     final_output_path.parent.mkdir(parents=True, exist_ok=True)
     if final_output_path.exists():
         final_output_path.unlink()
@@ -371,33 +427,43 @@ class ScannerUI:
         self.text_helper = TextEditHelper(self.root)
         self.doc_types = self.config.get("doc_types", [])
         self.current_doc: dict | None = None
+        self.last_output_path: Path | None = None
         self.tag_var = StringVar(self.root)
-        tags = self.ctx.tags or [""]
-        self.tag_var.set(tags[0])
+        tags = self.ctx.tags or []
+        ui_state = self.config.get("ui_state", {})
+        self.tags = tags
+        self.tag_var.set(select_initial_tag(tags, ui_state.get("last_tag", "")))
         self.preview_var = StringVar(self.root)
         self.custom_name_var = StringVar(self.root)
+        self.status_var = StringVar(self.root, "Готово")
         self._build()
+        self.name_entry.focus_set()
         self._refresh_preview()
 
     def _build(self) -> None:
         main = Frame(self.root)
-        main.pack(fill=BOTH, expand=True, padx=10, pady=10)
+        main.pack(fill=BOTH, expand=True, padx=12, pady=12)
         left = Frame(main)
-        left.pack(side=LEFT, fill=BOTH, expand=True)
+        left.pack(side=LEFT, fill=BOTH, expand=True, padx=(0, 10))
         right = Frame(main)
         right.pack(side=RIGHT, fill=BOTH, expand=True)
         Label(left, text="Що сканувати:", font=("Segoe UI", 10, "bold")).pack(anchor="w")
-        self.doc_list = Listbox(left, height=12)
+        self.doc_list = Listbox(left, height=12, font=("Segoe UI", 10))
         self.doc_list.pack(fill=BOTH, expand=True, pady=(6, 0))
         for item in self.doc_types:
             self.doc_list.insert(END, f"{item.get('code','000')} — {item.get('label','Документ')}")
         self.doc_list.bind("<<ListboxSelect>>", lambda _: self._on_doc_changed())
         if self.doc_types:
-            self.doc_list.selection_set(0)
+            idx = select_initial_doc_index(self.doc_types, self.config.get("ui_state", {}).get("last_doc_type", ""))
+            self.doc_list.selection_set(idx)
             self._on_doc_changed()
         Label(right, text="Тег/підрозділ:", font=("Segoe UI", 10, "bold")).pack(anchor="w")
-        tags = self.ctx.tags or ["(не знайдено)"]
-        OptionMenu(right, self.tag_var, *tags, command=lambda _: self._refresh_preview()).pack(fill="x", pady=(6, 10))
+        tags = self.tags
+        if len(tags) <= 1:
+            self.tag_var.set(tags[0] if tags else "")
+            Label(right, textvariable=self.tag_var, fg="#1f6d1f").pack(anchor="w", pady=(6, 10))
+        else:
+            OptionMenu(right, self.tag_var, *tags, command=lambda _: self._on_tag_changed()).pack(fill="x", pady=(6, 10))
         Label(right, text="Назва файлу:", font=("Segoe UI", 10, "bold")).pack(anchor="w")
         self.name_entry = Entry(right, textvariable=self.custom_name_var)
         self.name_entry.pack(fill="x", pady=(6, 2))
@@ -407,9 +473,69 @@ class ScannerUI:
         Label(right, textvariable=self.preview_var, wraplength=310, justify=LEFT, fg="#0b5").pack(anchor="w")
         btns = Frame(right)
         btns.pack(fill="x", pady=(14, 0))
-        Button(btns, text="Сканувати", command=self._scan, bg="#2f7", font=("Segoe UI", 10, "bold")).pack(side=LEFT)
+        Button(btns, text="Сканувати", command=self._scan, bg="#2f7", font=("Segoe UI", 12, "bold"), padx=18, pady=6).pack(side=LEFT)
         Button(btns, text="Налаштування", command=self._settings).pack(side=LEFT, padx=8)
         Button(btns, text="Вихід", command=self.root.destroy).pack(side=RIGHT)
+        post_btns = Frame(right)
+        post_btns.pack(fill="x", pady=(8, 0))
+        self.open_folder_btn = Button(post_btns, text="Відкрити папку", state="disabled", command=self._open_last_folder)
+        self.open_folder_btn.pack(side=LEFT)
+        self.copy_path_btn = Button(post_btns, text="Копіювати шлях", state="disabled", command=self._copy_last_path)
+        self.copy_path_btn.pack(side=LEFT, padx=8)
+        Label(self.root, textvariable=self.status_var, anchor="w", relief="sunken", padx=8).pack(fill="x", side="bottom")
+        self.root.bind("<Return>", lambda _: self._scan())
+        self.root.bind("<Escape>", lambda _: self.root.destroy())
+        self.root.bind("<Control-l>", lambda _: self._clear_name())
+        self.root.bind("<Control-L>", lambda _: self._clear_name())
+        self.root.bind("<Control-c>", lambda _: self._copy_filename())
+        self.root.bind("<Control-C>", lambda _: self._copy_filename())
+
+    def _set_status(self, text: str) -> None:
+        self.status_var.set(text)
+        self.root.update_idletasks()
+
+    def _save_ui_state(self) -> None:
+        self.config["ui_state"] = {
+            "last_doc_type": self.current_doc.get("key", "") if self.current_doc else "",
+            "last_tag": self.tag_var.get(),
+        }
+        save_config(self.config)
+
+    def _on_tag_changed(self) -> None:
+        self._save_ui_state()
+        self._refresh_preview()
+
+    def _clear_name(self) -> str:
+        self.custom_name_var.set("")
+        return "break"
+
+    def _copy_filename(self) -> str:
+        if not self.current_doc:
+            return "break"
+        tag = self.tag_var.get()
+        auto_name = build_filename(self.current_doc, self.ctx, tag)
+        name = sanitize_part(self.custom_name_var.get()) or auto_name
+        text = f"{name}.{self.config.get('output_extension', 'pdf')}"
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self._set_status("Назву файлу скопійовано")
+        return "break"
+
+    def _open_last_folder(self) -> None:
+        if not self.last_output_path:
+            return
+        folder = self.last_output_path.parent
+        if sys.platform.startswith("win"):
+            os.startfile(str(folder))
+        else:
+            messagebox.showinfo("Інфо", f"Відкрийте папку вручну:\n{folder}")
+
+    def _copy_last_path(self) -> None:
+        if not self.last_output_path:
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(str(self.last_output_path))
+        self._set_status("Шлях скопійовано")
 
     def _on_doc_changed(self) -> None:
         idxs = self.doc_list.curselection()
@@ -417,6 +543,7 @@ class ScannerUI:
             self.current_doc = None
             return
         self.current_doc = self.doc_types[idxs[0]]
+        self._save_ui_state()
         self._refresh_preview()
 
     def _refresh_preview(self) -> None:
@@ -431,13 +558,20 @@ class ScannerUI:
 
     def _scan(self) -> None:
         if not self.current_doc:
+            self._set_status("Помилка: оберіть тип документа")
             messagebox.showerror("Помилка", "Оберіть тип документа")
             return
         cmd = _normalize_scan_command(self.config.get("scan_command", "")).strip()
         if not cmd:
+            self._set_status("Помилка: не налаштована команда сканування")
             messagebox.showerror("Помилка", "Не налаштована команда сканування")
             return
-        tag = self.tag_var.get() if self.tag_var.get() != "(не знайдено)" else ""
+        tag = self.tag_var.get().strip()
+        validation_error = validate_scan_requirements(self.ctx, tag)
+        if validation_error:
+            self._set_status(f"Помилка: {validation_error}")
+            messagebox.showerror("Помилка", validation_error)
+            return
         auto_name = build_filename(self.current_doc, self.ctx, tag)
         name = sanitize_part(self.custom_name_var.get()) or auto_name
         output_path = self.cwd / f"{name}.{self.config.get('output_extension', 'pdf')}"
@@ -469,6 +603,7 @@ class ScannerUI:
             return "cancel"
 
         try:
+            self._set_status("Сканування...")
             resolved_path, resolved_strategy = resolve_final_output_path(
                 output_path,
                 self.config.get("duplicate_strategy", "ask"),
@@ -481,32 +616,43 @@ class ScannerUI:
                 append_scan_log(log_path, log_entry)
                 if temp_path.exists():
                     temp_path.unlink()
+                self._set_status("Готово")
                 return
             log_entry["final_output_path"] = str(resolved_path)
             final_path = perform_scan_with_temp(
                 cmd_template=cmd,
                 temp_output_path=temp_path,
                 final_output_path=resolved_path,
+                status_callback=self._set_status,
             )
             log_entry["status"] = "success"
             log_entry["message"] = "Сканування завершено успішно"
             append_scan_log(log_path, log_entry)
+            self.last_output_path = final_path
+            self.open_folder_btn.config(state="normal")
+            self.copy_path_btn.config(state="normal")
+            self._set_status("Готово")
             messagebox.showinfo("Готово", f"Файл створено:\n{final_path}")
         except ValueError as exc:
             log_entry["message"] = str(exc)
             append_scan_log(log_path, log_entry)
+            self._set_status(f"Помилка: {exc}")
             messagebox.showerror("Помилка", f"Некоректна команда сканування:\n{exc}")
         except FileNotFoundError as exc:
             log_entry["message"] = str(exc)
             append_scan_log(log_path, log_entry)
+            self._set_status(f"Помилка: {exc}")
             messagebox.showerror("Помилка", str(exc))
         except subprocess.CalledProcessError as exc:
-            log_entry["message"] = f"Зовнішня програма сканування завершилась з помилкою (код {exc.returncode})"
+            error_message = format_scan_process_error(exc)
+            log_entry["message"] = error_message
             append_scan_log(log_path, log_entry)
-            messagebox.showerror("Помилка", f"Зовнішня програма сканування завершилась з помилкою (код {exc.returncode}).")
+            self._set_status(f"Помилка: {error_message}")
+            messagebox.showerror("Помилка", error_message)
         except Exception as exc:
             log_entry["message"] = str(exc)
             append_scan_log(log_path, log_entry)
+            self._set_status(f"Помилка: {exc}")
             messagebox.showerror("Помилка", str(exc))
         finally:
             if temp_path.exists():
@@ -571,6 +717,8 @@ class ScannerUI:
 def main() -> int:
     raw_cwd = sys.argv[1] if len(sys.argv) > 1 else str(Path.cwd())
     cwd = Path(_clean_target_dir(raw_cwd)).resolve()
+    cfg = load_config()
+    cleanup_temp_files(Path(__file__).resolve().parent / cfg.get("temp_dir", "tmp_scans"))
     ui = ScannerUI(cwd)
     ui.run()
     return 0

@@ -4,6 +4,10 @@
   "duplicate_strategy": "ask",
   "temp_dir": "tmp_scans",
   "log_file": "scan_log.csv",
+  "ui_state": {
+    "last_doc_type": "as",
+    "last_tag": "СЗ"
+  },
   "doc_types": [
     {
       "key": "vvzv",
