@@ -1,12 +1,11 @@
 @echo off
 setlocal
 
-REM Launch wrapper for Total Commander button.
-REM Usage from TC parameters: "%P"
+REM DEBUG launcher (shows console).
+REM Use launch_tc_scanner_silent.vbs from Total Commander for true GUI-only start.
 
 set "SCRIPT_DIR=%~dp0"
 set "TARGET_DIR=%~1"
-
 if "%TARGET_DIR%"=="" set "TARGET_DIR=%CD%"
 
 where py >nul 2>nul
