@@ -1,0 +1,98 @@
+{
+  "scan": {
+    "mode": "profile",
+    "naps2_exe": "C:\\PROGRA~1\\NAPS2\\NAPS2.Console.exe",
+    "profile_name": "DR",
+    "command_template": "",
+    "driver": "twain",
+    "device": "Pantum",
+    "dpi": 300,
+    "page_size": "a4",
+    "bitdepth": "gray",
+    "output_extension": "pdf",
+    "multi_page": true,
+    "force_overwrite_flag": true
+  },
+  "paths": {
+    "temp_dir": "tmp_scans",
+    "log_file": "scan_log.csv",
+    "force_temp_for_network": true,
+    "network_prefixes": [
+      "G:\\"
+    ]
+  },
+  "behavior": {
+    "duplicate_strategy": "ask",
+    "allow_incomplete_context": true,
+    "status_warnings_only": true,
+    "log_parse_warnings": true
+  },
+  "naming": {
+    "fallback_if_empty": true,
+    "replace_spaces": "_",
+    "max_length": 180,
+    "trim_extra_separators": true,
+    "minimal_template": "{code}_{label}"
+  },
+  "ui": {
+    "remember_last_doc_type": true,
+    "remember_last_tag": true,
+    "focus_name_on_start": true,
+    "show_status_bar": true,
+    "mode": "simple"
+  },
+  "ui_state": {
+    "last_doc_type": "as",
+    "last_tag": ""
+  },
+  "doc_types": [
+    {
+      "key": "vvzv",
+      "label": "ВВЗВ",
+      "code": "001",
+      "template": "{code}_{label}_{date}_{episode}_{tag}"
+    },
+    {
+      "key": "vvm",
+      "label": "ВВМ",
+      "code": "002",
+      "template": "{code}_{label}_{date}_{episode}_{tag}"
+    },
+    {
+      "key": "zalyshkova_vartist",
+      "label": "Відомість залишкової вартості",
+      "code": "003",
+      "template": "{code}_{label}_{date}_{episode}_{tag}"
+    },
+    {
+      "key": "yeas",
+      "label": "ЄАС",
+      "code": "004",
+      "template": "{code}_{label}_{date}_{episode}_{tag}"
+    },
+    {
+      "key": "as",
+      "label": "АС",
+      "code": "005",
+      "template": "{code}_{label}_{date}_{episode}_{tag}"
+    },
+    {
+      "key": "extract_losses",
+      "label": "витяг з книги втрат",
+      "code": "006",
+      "template": "{code}_{section}_{label}_{date}_{episode}_{tag}"
+    },
+    {
+      "key": "extract_shortages",
+      "label": "витяг з книги нестач",
+      "code": "007",
+      "template": "{code}_{section}_{label}_{date}_{episode}_{tag}"
+    },
+    {
+      "key": "order",
+      "label": "Наказ",
+      "code": "008",
+      "template": "{code}_{label}_{date}_{episode}_{tag}"
+    }
+  ]
+}

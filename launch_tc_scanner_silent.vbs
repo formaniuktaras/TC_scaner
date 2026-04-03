@@ -70,19 +70,26 @@ Function NormalizeTargetDir(ByVal rawValue, ByVal defaultDir)
 End Function
 
 Function LaunchExecutable(ByVal baseDir, ByVal targetPath)
-  Dim exePath, cmd
-  exePath = fso.BuildPath(baseDir, "TC_Scanner.exe")
-  If Not fso.FileExists(exePath) Then
-    LaunchExecutable = False
-    Exit Function
-  End If
+  Dim candidates, i, exePath, cmd
+  candidates = Array( _
+    fso.BuildPath(baseDir, "TC_Scanner.exe"), _
+    fso.BuildPath(baseDir, "dist\TC_Scanner\TC_Scanner.exe") _
+  )
 
-  cmd = Quote(exePath) & " " & Quote(targetPath)
-  On Error Resume Next
-  shell.Run cmd, 0, False
-  LaunchExecutable = (Err.Number = 0)
-  Err.Clear
-  On Error GoTo 0
+  For i = 0 To UBound(candidates)
+    exePath = candidates(i)
+    If fso.FileExists(exePath) Then
+      cmd = Quote(exePath) & " " & Quote(targetPath)
+      On Error Resume Next
+      shell.Run cmd, 0, False
+      LaunchExecutable = (Err.Number = 0)
+      Err.Clear
+      On Error GoTo 0
+      If LaunchExecutable Then Exit Function
+    End If
+  Next
+
+  LaunchExecutable = False
 End Function
 
 Function LaunchWithWindowedPython(ByVal baseDir, ByVal targetPath)

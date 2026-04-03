@@ -13,6 +13,18 @@ def test_load_default_config_creates_file(tmp_path: Path):
     assert cfg.scan.output_extension == "pdf"
 
 
+
+
+def test_load_default_config_uses_template_when_present(tmp_path: Path, monkeypatch):
+    cfg_path = tmp_path / "scanner_config.json"
+    template = tmp_path / "scanner_config.default.json"
+    template.write_text(json.dumps({"scan": {"profile_name": "CUSTOM"}}), encoding="utf-8")
+    monkeypatch.setattr("app_config.get_default_config_template_path", lambda: template)
+
+    cfg = load_config(cfg_path)
+
+    assert cfg.scan.profile_name == "CUSTOM"
+    assert cfg_path.exists()
 def test_migrate_legacy_flat_config(tmp_path: Path):
     cfg_path = tmp_path / "scanner_config.json"
     cfg_path.write_text(json.dumps({"scan_command": "scanner -o \"{output_path}\"", "temp_dir": "tmp2"}), encoding="utf-8")

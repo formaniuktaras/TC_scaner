@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from app_paths import resolve_app_path
+from app_paths import get_log_path, get_tmp_scans_dir, resolve_app_path
 from app_config import AppConfig, ScanConfig
 
 LOG_FIELDS = [
@@ -29,18 +29,20 @@ LOG_FIELDS = [
 ]
 
 
-def _resolve_relative_to_launcher(path_value: str, fallback: str) -> Path:
-    return resolve_app_path(path_value, fallback, __file__)
+def _resolve_relative_to_app(path_value: str, fallback: str) -> Path:
+    return resolve_app_path(path_value, fallback)
 
 
 def get_temp_dir(app_config: AppConfig) -> Path:
-    path = _resolve_relative_to_launcher(app_config.paths.temp_dir, "tmp_scans")
+    fallback = str(get_tmp_scans_dir())
+    path = _resolve_relative_to_app(app_config.paths.temp_dir, fallback)
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def get_log_file_path(app_config: AppConfig) -> Path:
-    return _resolve_relative_to_launcher(app_config.paths.log_file, "scan_log.csv")
+    fallback = str(get_log_path())
+    return _resolve_relative_to_app(app_config.paths.log_file, fallback)
 
 
 def normalize_output_path(path: Path | str) -> Path:
