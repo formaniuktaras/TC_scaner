@@ -4,11 +4,11 @@ import json
 import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-
-from app_paths import get_app_dir
 from typing import Any
 
-CONFIG_PATH = get_app_dir(__file__) / "scanner_config.json"
+from app_paths import get_config_path, get_default_config_template_path
+
+CONFIG_PATH = get_config_path()
 ALLOWED_TEMPLATE_PLACEHOLDERS = {"code", "label", "date", "episode", "section", "tag"}
 PLACEHOLDER_RE = re.compile(r"\{([^{}]+)\}")
 
@@ -262,9 +262,24 @@ def validate_config(cfg: AppConfig) -> None:
     validate_doc_types(cfg.doc_types)
 
 
+def _load_default_template_if_exists() -> dict[str, Any] | None:
+    template_path = get_default_config_template_path()
+    if not template_path.exists():
+        return None
+    try:
+        raw = json.loads(template_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ConfigValidationError(f"Невалідний JSON у scanner_config.default.json: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ConfigValidationError("scanner_config.default.json має містити JSON-об'єкт")
+    return raw
+
+
 def load_config(config_path: Path = CONFIG_PATH) -> AppConfig:
     if not config_path.exists():
-        cfg = AppConfig()
+        seed = _load_default_template_if_exists() or default_config_dict()
+        cfg = AppConfig.from_dict(seed)
+        cfg.validate()
         save_config(cfg, config_path)
         return cfg
 
@@ -280,4 +295,5 @@ def load_config(config_path: Path = CONFIG_PATH) -> AppConfig:
 
 def save_config(cfg: AppConfig, config_path: Path = CONFIG_PATH) -> None:
     cfg.validate()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(json.dumps(cfg.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
