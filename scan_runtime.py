@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from app_paths import resolve_app_path
 from app_config import AppConfig, ScanConfig
 
 LOG_FIELDS = [
@@ -29,11 +30,7 @@ LOG_FIELDS = [
 
 
 def _resolve_relative_to_launcher(path_value: str, fallback: str) -> Path:
-    value = (path_value or fallback).strip() or fallback
-    candidate = Path(value)
-    if candidate.is_absolute():
-        return candidate
-    return Path(__file__).resolve().parent / candidate
+    return resolve_app_path(path_value, fallback, __file__)
 
 
 def get_temp_dir(app_config: AppConfig) -> Path:

@@ -1,8 +1,8 @@
 @echo off
 setlocal
 
-REM DEBUG launcher (shows console).
-REM Use launch_tc_scanner_silent.vbs from Total Commander for true GUI-only start.
+REM DEBUG launcher (console expected).
+REM GUI-only launchers: TC_Scanner.exe (preferred) or launch_tc_scanner_silent.vbs via wscript.exe.
 
 set "SCRIPT_DIR=%~dp0"
 set "TARGET_DIR=%~1"
@@ -20,6 +20,6 @@ if %ERRORLEVEL%==0 (
   exit /b %ERRORLEVEL%
 )
 
-echo [TC_SCANER] Python launcher was not found in PATH.
-echo Install Python 3.10+ and ensure python.exe or py.exe is available.
+echo [TC_SCANNER][DEBUG] Console Python launcher not found.
+echo [TC_SCANNER][DEBUG] For GUI-only run use: TC_Scanner.exe or wscript.exe launch_tc_scanner_silent.vbs "%%P"
 exit /b 1

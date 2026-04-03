@@ -2,44 +2,66 @@
 
 TC_scaner — Tkinter-лаунчер для керування скануванням через NAPS2.
 
-## Безконсольний запуск з Total Commander
+## Canonical GUI-only запуск
 
-`.cmd` **не може бути** повністю безконсольним primary launcher, бо Windows створює консоль для batch-процесу. Тому для кнопки Total Commander треба використовувати саме `wscript.exe + launch_tc_scanner_silent.vbs`.
+Пріоритет запуску для Total Commander:
 
-### Рекомендована конфігурація кнопки TC
+1. **`TC_Scanner.exe`** (windowed build, без консолі).
+2. **`wscript.exe + launch_tc_scanner_silent.vbs`** (fallback, теж без консолі).
+3. **`launch_tc_scanner.cmd`** — тільки debug-варіант (консоль очікувана).
 
-- **Command:** `wscript.exe`
-- **Parameters:** `"D:\PATH\TO\TC_scaner\launch_tc_scanner_silent.vbs" "%P"`
+`launch_tc_scanner_silent.vbs` запускає **лише GUI-safe** варіанти:
+- `TC_Scanner.exe` у папці проєкту (пріоритет №1);
+- `launch_tc_scanner.pyw` через `pythonw.exe` або `pyw.exe` (пріоритет №2);
+- якщо GUI runtime відсутній — показується `MsgBox` з поясненням.
 
-Готова команда (одним рядком):
+> Важливо: у silent launcher **немає** fallback на `python.exe` / `py.exe`, щоб не з'являлось console window.
+
+## Команди для кнопки Total Commander
+
+### Preferred (exe)
+
+- **Command:** `D:\PATH\TO\TC_scaner\dist\TC_Scanner.exe`
+- **Parameters:** `"%P"`
+
+Одним рядком:
 
 ```text
-wscript.exe "D:\PATH\TO\TC_scaner\launch_tc_scanner_silent.vbs" "%P"
+"D:\PATH\TO\TC_scaner\dist\TC_Scanner.exe" "%P"
 ```
 
-`launch_tc_scanner_silent.vbs`:
-- коректно очищає зайві лапки в аргументі папки;
-- обробляє пробіли/кирилицю в шляхах;
-- чистить trailing quote/slash проблеми;
-- намагається запуск через `pythonw.exe` (без консолі);
-- fallback: `py.exe` / `python.exe`;
-- за повної відсутності Python показує `MsgBox`, а не текст у консолі.
+### Fallback (VBS)
 
-## Ролі launcher-файлів
+- **Command:** `wscript.exe`
+- **Parameters:** `//nologo "D:\PATH\TO\TC_scaner\launch_tc_scanner_silent.vbs" "%P"`
 
-- `launch_tc_scanner_silent.vbs` — **основний launcher для Total Commander**.
-- `launch_tc_scanner.pyw` — windowed Python entry point (future-proof для `pythonw.exe`).
-- `launch_tc_scanner.cmd` — debug launcher (консоль можлива, це нормально).
+Одним рядком:
 
-## Future-proof (опційно)
-
-Для окремого exe можна зібрати windowed build:
-
-```bash
-pyinstaller --noconfirm --onefile --windowed tc_scanner_launcher.py
+```text
+wscript.exe //nologo "D:\PATH\TO\TC_scaner\launch_tc_scanner_silent.vbs" "%P"
 ```
 
-`--windowed` (`--noconsole`) прибирає консоль на рівні exe.
+## Build windowed exe (`TC_Scanner.exe`)
+
+```bat
+build_tc_scanner.cmd
+```
+
+Скрипт викликає PyInstaller з `--windowed --onefile --name TC_Scanner`.
+Результат: `dist\TC_Scanner.exe`.
+
+## Frozen / script mode paths
+
+Для стабільної роботи в script і frozen режимах використовується спільний helper:
+
+- у frozen (`sys.frozen=True`) база = папка `sys.executable`;
+- у script mode база = папка python-файлів.
+
+Тому runtime-файли працюють стабільно в обох режимах:
+
+- `scanner_config.json`;
+- `scan_log.csv`;
+- `tmp_scans`.
 
 ## Тести
 

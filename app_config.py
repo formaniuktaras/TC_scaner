@@ -4,9 +4,11 @@ import json
 import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+
+from app_paths import get_app_dir
 from typing import Any
 
-CONFIG_PATH = Path(__file__).with_name("scanner_config.json")
+CONFIG_PATH = get_app_dir(__file__) / "scanner_config.json"
 ALLOWED_TEMPLATE_PLACEHOLDERS = {"code", "label", "date", "episode", "section", "tag"}
 PLACEHOLDER_RE = re.compile(r"\{([^{}]+)\}")
 

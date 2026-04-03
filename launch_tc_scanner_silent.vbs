@@ -1,28 +1,24 @@
 Option Explicit
 
-Dim fso, shell, scriptDir, targetDir, launcherScript
+Dim fso, shell, scriptDir, targetDir
 Set fso = CreateObject("Scripting.FileSystemObject")
 Set shell = CreateObject("WScript.Shell")
 
 scriptDir = fso.GetParentFolderName(WScript.ScriptFullName)
 targetDir = NormalizeTargetDir(GetArgumentOrEmpty(0), shell.CurrentDirectory)
-launcherScript = ResolveLauncherScript(scriptDir)
 
-If Not fso.FileExists(launcherScript) Then
-  ShowError "Не знайдено launcher script:" & vbCrLf & launcherScript
-  WScript.Quit 1
-End If
-
-If LaunchWithPythonw(launcherScript, targetDir) Then
+If LaunchExecutable(scriptDir, targetDir) Then
   WScript.Quit 0
 End If
 
-If LaunchWithFallbackConsolePython(launcherScript, targetDir) Then
+If LaunchWithWindowedPython(scriptDir, targetDir) Then
   WScript.Quit 0
 End If
 
-ShowError "Python не знайдено." & vbCrLf & _
-          "Встановіть Python 3.10+ (з pythonw.exe або py.exe)."
+ShowError "Не знайдено GUI launcher для TC Scanner." & vbCrLf & _
+          "Очікується один із варіантів:" & vbCrLf & _
+          "1) TC_Scanner.exe у папці проєкту" & vbCrLf & _
+          "2) pythonw.exe або pyw.exe + launch_tc_scanner.pyw"
 WScript.Quit 1
 
 Function GetArgumentOrEmpty(ByVal index)
@@ -30,17 +26,6 @@ Function GetArgumentOrEmpty(ByVal index)
     GetArgumentOrEmpty = CStr(WScript.Arguments(index))
   Else
     GetArgumentOrEmpty = ""
-  End If
-End Function
-
-Function ResolveLauncherScript(ByVal baseDir)
-  Dim pywPath, pyPath
-  pywPath = fso.BuildPath(baseDir, "launch_tc_scanner.pyw")
-  pyPath = fso.BuildPath(baseDir, "tc_scanner_launcher.py")
-  If fso.FileExists(pywPath) Then
-    ResolveLauncherScript = pywPath
-  Else
-    ResolveLauncherScript = pyPath
   End If
 End Function
 
@@ -68,14 +53,14 @@ Function NormalizeTargetDir(ByVal rawValue, ByVal defaultDir)
     value = Trim(value)
   Loop
 
+  value = Replace(value, "/", "\")
+
   If Len(value) > 3 Then
-    Do While Right(value, 1) = "\" Or Right(value, 1) = "/"
+    Do While Right(value, 1) = "\"
       value = Left(value, Len(value) - 1)
       If Len(value) <= 3 Then Exit Do
     Loop
   End If
-
-  value = Replace(value, "/", "\")
 
   If Len(value) = 0 Then
     value = CStr(defaultDir)
@@ -84,18 +69,40 @@ Function NormalizeTargetDir(ByVal rawValue, ByVal defaultDir)
   NormalizeTargetDir = value
 End Function
 
-Function LaunchWithPythonw(ByVal scriptPath, ByVal targetPath)
-  Dim candidates, i, cmd, exePath
-  candidates = PythonwCandidates()
+Function LaunchExecutable(ByVal baseDir, ByVal targetPath)
+  Dim exePath, cmd
+  exePath = fso.BuildPath(baseDir, "TC_Scanner.exe")
+  If Not fso.FileExists(exePath) Then
+    LaunchExecutable = False
+    Exit Function
+  End If
 
-  For i = 0 To UBound(candidates)
-    exePath = candidates(i)
-    If IsUsableExecutable(exePath) Then
-      cmd = Quote(exePath) & " " & Quote(scriptPath) & " " & Quote(targetPath)
+  cmd = Quote(exePath) & " " & Quote(targetPath)
+  On Error Resume Next
+  shell.Run cmd, 0, False
+  LaunchExecutable = (Err.Number = 0)
+  Err.Clear
+  On Error GoTo 0
+End Function
+
+Function LaunchWithWindowedPython(ByVal baseDir, ByVal targetPath)
+  Dim launcherScript, runtimes, i, cmd, runtimePath
+
+  launcherScript = fso.BuildPath(baseDir, "launch_tc_scanner.pyw")
+  If Not fso.FileExists(launcherScript) Then
+    LaunchWithWindowedPython = False
+    Exit Function
+  End If
+
+  runtimes = WindowedPythonCandidates()
+  For i = 0 To UBound(runtimes)
+    runtimePath = runtimes(i)
+    If IsUsableExecutable(runtimePath) Then
+      cmd = Quote(runtimePath) & " " & Quote(launcherScript) & " " & Quote(targetPath)
       On Error Resume Next
       shell.Run cmd, 0, False
       If Err.Number = 0 Then
-        LaunchWithPythonw = True
+        LaunchWithWindowedPython = True
         Exit Function
       End If
       Err.Clear
@@ -103,35 +110,14 @@ Function LaunchWithPythonw(ByVal scriptPath, ByVal targetPath)
     End If
   Next
 
-  LaunchWithPythonw = False
+  LaunchWithWindowedPython = False
 End Function
 
-Function LaunchWithFallbackConsolePython(ByVal scriptPath, ByVal targetPath)
-  Dim candidates, i, cmd, exePath
-  candidates = ConsolePythonCandidates()
-
-  For i = 0 To UBound(candidates)
-    exePath = candidates(i)
-    If IsUsableExecutable(exePath) Then
-      cmd = Quote(exePath) & " " & Quote(scriptPath) & " " & Quote(targetPath)
-      On Error Resume Next
-      shell.Run cmd, 0, False
-      If Err.Number = 0 Then
-        LaunchWithFallbackConsolePython = True
-        Exit Function
-      End If
-      Err.Clear
-      On Error GoTo 0
-    End If
-  Next
-
-  LaunchWithFallbackConsolePython = False
-End Function
-
-Function PythonwCandidates()
+Function WindowedPythonCandidates()
   Dim items
   items = Array( _
     FindInPath("pythonw.exe"), _
+    FindInPath("pyw.exe"), _
     ReadRegSafe("HKCU\Software\Python\PythonCore\3.13\InstallPath\WindowedExecutablePath"), _
     ReadRegSafe("HKCU\Software\Python\PythonCore\3.12\InstallPath\WindowedExecutablePath"), _
     ReadRegSafe("HKCU\Software\Python\PythonCore\3.11\InstallPath\WindowedExecutablePath"), _
@@ -143,28 +129,10 @@ Function PythonwCandidates()
     shell.ExpandEnvironmentStrings("%LocalAppData%") & "\Programs\Python\Python313\pythonw.exe", _
     shell.ExpandEnvironmentStrings("%LocalAppData%") & "\Programs\Python\Python312\pythonw.exe", _
     shell.ExpandEnvironmentStrings("%LocalAppData%") & "\Programs\Python\Python311\pythonw.exe", _
-    shell.ExpandEnvironmentStrings("%LocalAppData%") & "\Programs\Python\Python310\pythonw.exe" _
+    shell.ExpandEnvironmentStrings("%LocalAppData%") & "\Programs\Python\Python310\pythonw.exe", _
+    shell.ExpandEnvironmentStrings("%SystemRoot%") & "\pyw.exe" _
   )
-  PythonwCandidates = items
-End Function
-
-Function ConsolePythonCandidates()
-  Dim items
-  items = Array( _
-    FindInPath("py.exe"), _
-    shell.ExpandEnvironmentStrings("%SystemRoot%") & "\py.exe", _
-    shell.ExpandEnvironmentStrings("%LocalAppData%") & "\Programs\Python\Launcher\py.exe", _
-    FindInPath("python.exe"), _
-    ReadRegSafe("HKCU\Software\Python\PythonCore\3.13\InstallPath\ExecutablePath"), _
-    ReadRegSafe("HKCU\Software\Python\PythonCore\3.12\InstallPath\ExecutablePath"), _
-    ReadRegSafe("HKCU\Software\Python\PythonCore\3.11\InstallPath\ExecutablePath"), _
-    ReadRegSafe("HKCU\Software\Python\PythonCore\3.10\InstallPath\ExecutablePath"), _
-    ReadRegSafe("HKLM\Software\Python\PythonCore\3.13\InstallPath\ExecutablePath"), _
-    ReadRegSafe("HKLM\Software\Python\PythonCore\3.12\InstallPath\ExecutablePath"), _
-    ReadRegSafe("HKLM\Software\Python\PythonCore\3.11\InstallPath\ExecutablePath"), _
-    ReadRegSafe("HKLM\Software\Python\PythonCore\3.10\InstallPath\ExecutablePath") _
-  )
-  ConsolePythonCandidates = items
+  WindowedPythonCandidates = items
 End Function
 
 Function FindInPath(ByVal exeName)
