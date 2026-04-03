@@ -8,7 +8,7 @@ TC_scaner — Tkinter-лаунчер для керування скануван�
 
 1. **`TC_Scanner.exe`** (windowed build, без консолі).
 2. **`wscript.exe + launch_tc_scanner_silent.vbs`** (fallback, теж без консолі).
-3. **`launch_tc_scanner.cmd`** — тільки debug-варіант (консоль очікувана).
+3. **`launch_tc_scanner.cmd`** — shim, який делегує у `wscript.exe + launch_tc_scanner_silent.vbs` (без постійної консолі).
 
 `launch_tc_scanner_silent.vbs` запускає **лише GUI-safe** варіанти:
 - `TC_Scanner.exe` у папці проєкту (пріоритет №1);
