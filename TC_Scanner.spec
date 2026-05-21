@@ -6,16 +6,18 @@ block_cipher = None
 
 project_dir = Path(__file__).resolve().parent
 icon_path = project_dir / "assets" / "tc_scanner.ico"
+default_config_path = project_dir / "scanner_config.default.json"
 
 exe_icon = str(icon_path) if icon_path.exists() else None
+datas = []
+if default_config_path.exists():
+    datas.append((str(default_config_path), "."))
 
 a = Analysis(
     ['launch_tc_scanner.pyw'],
     pathex=[str(project_dir)],
     binaries=[],
-    datas=[
-        (str(project_dir / 'scanner_config.default.json'), '.'),
-    ],
+    datas=datas,
     hiddenimports=['tkinter', 'tkinter.scrolledtext'],
     hookspath=[],
     hooksconfig={},
