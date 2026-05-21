@@ -177,7 +177,8 @@ class ScannerUI:
         self.ctx = parse_context(cwd)
         self.root = Tk()
         self.root.title("TC Scanner")
-        self.root.geometry("760x460")
+        self.root.geometry("800x680")
+        self.root.minsize(760, 640)
         self.text_helper = TextEditHelper(self.root)
         self.doc_types = self.app_config.doc_types
         self.current_doc: DocTypeConfig | None = None

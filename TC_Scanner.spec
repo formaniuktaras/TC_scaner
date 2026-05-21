@@ -4,18 +4,24 @@ from pathlib import Path
 
 block_cipher = None
 
-project_dir = Path(__file__).resolve().parent
-icon_path = project_dir / "assets" / "tc_scanner.ico"
+spec_dir = Path(globals().get('SPECPATH', Path.cwd())).resolve()
+project_dir = spec_dir if (spec_dir / 'launch_tc_scanner.pyw').exists() else Path.cwd().resolve()
+icon_path = project_dir / 'assets' / 'tc_scanner.ico'
 
 exe_icon = str(icon_path) if icon_path.exists() else None
+
+datas = [
+    (str(project_dir / 'scanner_config.default.json'), '.'),
+]
+config_path = project_dir / 'scanner_config.json'
+if config_path.exists():
+    datas.append((str(config_path), '.'))
 
 a = Analysis(
     ['launch_tc_scanner.pyw'],
     pathex=[str(project_dir)],
     binaries=[],
-    datas=[
-        (str(project_dir / 'scanner_config.default.json'), '.'),
-    ],
+    datas=datas,
     hiddenimports=['tkinter', 'tkinter.scrolledtext'],
     hookspath=[],
     hooksconfig={},
